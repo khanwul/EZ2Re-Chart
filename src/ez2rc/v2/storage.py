@@ -159,6 +159,8 @@ class CacheWriter(AbstractContextManager):
             # A valid concurrent publisher wins. Corrupt caches stay reviewable.
             try:
                 existing = Cache(self.final, self.key)
+                if validate is not None:
+                    validate(self.final)
             except CacheError:
                 quarantine = self.final.with_name(f".{self.id}.corrupt-{self.temp.name.rsplit('.', 1)[-1]}")
                 self.final.rename(quarantine)
@@ -170,7 +172,10 @@ class CacheWriter(AbstractContextManager):
         except OSError as exc:
             if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
                 raise
-            return Cache(self.final, self.key)
+            existing = Cache(self.final, self.key)
+            if validate is not None:
+                validate(self.final)
+            return existing
         self.published = True
         return Cache(self.final, self.key)
 

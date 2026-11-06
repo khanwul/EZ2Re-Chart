@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import math
 import tomllib
@@ -84,6 +84,48 @@ class SongConfig:
 
 
 @dataclass(frozen=True)
+class MotionConfig:
+    min_similarity: float = 0.70
+    match_tolerance_px: float = 2.0
+    max_speed_px_per_ms: float = 6.0
+    displacement_slack_px: float = 4.0
+    min_lanes: int = 2
+    history_frames: int = 8
+    ambiguity_ratio: float = 0.90
+    repeat_difference: float = 0.75
+
+    def __post_init__(self):
+        for key in ("min_similarity", "ambiguity_ratio"):
+            if not 0 < number(getattr(self, key), key) <= 1:
+                raise ConfigError(f"{key} must be in (0, 1]")
+        for key in ("match_tolerance_px", "max_speed_px_per_ms", "displacement_slack_px"):
+            number(getattr(self, key), key, 0.001)
+        number(self.repeat_difference, "repeat_difference", 0)
+        integer(self.min_lanes, "min_lanes", 2)
+        integer(self.history_frames, "history_frames", 1)
+
+
+@dataclass(frozen=True)
+class FusionConfig:
+    grid_px: float = 1.0
+    tile_bins: int = 2048
+    unknown_weight: float = 0.5
+    occluded_weight: float = 0.1
+    clipped_weight: float = 0.25
+    effect_weight: float = 0.0
+    repeat_group_cap: float = 1.0
+    inferred_motion_weight: float = 0.25
+
+    def __post_init__(self):
+        number(self.grid_px, "grid_px", 0.001)
+        integer(self.tile_bins, "tile_bins", 16)
+        for key in ("unknown_weight", "occluded_weight", "clipped_weight", "effect_weight", "inferred_motion_weight"):
+            if not 0 <= number(getattr(self, key), key) <= 1:
+                raise ConfigError(f"{key} must be in [0, 1]")
+        number(self.repeat_group_cap, "repeat_group_cap", 0.001)
+
+
+@dataclass(frozen=True)
 class AlgorithmConfig:
     chunk_frames: int = 120
     timestamp_policy: str = "strict"
@@ -94,8 +136,12 @@ class AlgorithmConfig:
     barline_min_brightness: float = 30.0
     barline_max_brightness: float = 180.0
     barline_max_thickness: int = 8
+    motion: MotionConfig = field(default_factory=MotionConfig)
+    fusion: FusionConfig = field(default_factory=FusionConfig)
 
     def __post_init__(self):
+        if not isinstance(self.motion, MotionConfig) or not isinstance(self.fusion, FusionConfig):
+            raise ConfigError("motion and fusion must be parameter tables")
         integer(self.chunk_frames, "chunk_frames", 1)
         integer(self.search_radius_px, "search_radius_px")
         integer(self.barline_max_thickness, "barline_max_thickness", 1)
@@ -110,7 +156,7 @@ class AlgorithmConfig:
         number(self.alignment_probe_ms, "alignment_probe_ms", 0.001)
 
     def observation_parameters(self):
-        return {k: v for k, v in asdict(self).items() if k != "timestamp_policy"}
+        return {k: v for k, v in asdict(self).items() if k not in {"timestamp_policy", "motion", "fusion"}}
 
 
 @dataclass(frozen=True)
@@ -187,6 +233,10 @@ def load_algorithm(path: Path | None) -> AlgorithmConfig:
         return AlgorithmConfig()
     data = load_toml(path)
     table(data, {"schema_version", *AlgorithmConfig.__dataclass_fields__})
+    for name, cls in (("motion", MotionConfig), ("fusion", FusionConfig)):
+        if name in data:
+            table(data[name], cls.__dataclass_fields__)
+            data[name] = cls(**data[name])
     return AlgorithmConfig(**{k: v for k, v in data.items() if k != "schema_version"})
 
 

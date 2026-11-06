@@ -8,3 +8,25 @@ alignment_probe_ms = 2000.0
 barline_min_brightness = 30.0
 barline_max_brightness = 180.0
 barline_max_thickness = 8
+
+# Common algorithm parameters, independent of song metadata and BPM.
+[motion]
+min_similarity = 0.70
+match_tolerance_px = 2.0
+max_speed_px_per_ms = 6.0
+# A search bound, not an assumed per-frame displacement.
+displacement_slack_px = 4.0
+min_lanes = 2
+history_frames = 8
+ambiguity_ratio = 0.90
+repeat_difference = 0.75
+
+[fusion]
+grid_px = 1.0
+tile_bins = 2048
+unknown_weight = 0.5
+occluded_weight = 0.1
+clipped_weight = 0.25
+effect_weight = 0.0
+repeat_group_cap = 1.0
+inferred_motion_weight = 0.25
