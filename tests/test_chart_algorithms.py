@@ -3,20 +3,20 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ez2cv.chart.barline import reconstruct_barlines
-from ez2cv.chart.clock import BPMDraft, BPMSegment, TickClock
-from ez2cv.chart.pipeline import (_apply_timing_uncertainty, ChartNote,
+from ez2rc.chart.barline import reconstruct_barlines
+from ez2rc.chart.clock import BPMDraft, BPMSegment, TickClock
+from ez2rc.chart.pipeline import (_apply_timing_uncertainty, ChartNote,
                                   _convert_and_snap_notes,
                                   _predicted_max_combo)
-from ez2cv.chart.quantize import choose_measure_grid, snap_by_measure, snap_tick
-from ez2cv.chart.timeline import (_expand_symmetric_subbeat_steps,
+from ez2rc.chart.quantize import choose_measure_grid, snap_by_measure, snap_tick
+from ez2rc.chart.timeline import (_expand_symmetric_subbeat_steps,
                                   _fit_tempo_clock, _repair_beats,
                                   _normalized_tempo_clock,
                                   _tempo_clock_score,
                                   clean_beat_times)
-from ez2cv.detection.barline import BarlineEvent
-from ez2cv.detection.beat import BeatEvent
-from ez2cv.detection.tracking import RawNote
+from ez2rc.detection.barline import BarlineEvent
+from ez2rc.detection.beat import BeatEvent
+from ez2rc.detection.tracking import RawNote
 
 
 class ChartAlgorithmTest(unittest.TestCase):

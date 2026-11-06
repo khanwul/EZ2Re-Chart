@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ez2cv.config import LaneConfig, MeasureLineConfig, RunConfig
+from ez2rc.config import LaneConfig, MeasureLineConfig, RunConfig
 
 
 FPS = 60.0

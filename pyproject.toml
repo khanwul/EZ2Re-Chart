@@ -1,7 +1,7 @@
 [project]
-name = "ez2cv"
+name = "ez2rc"
 version = "0.1.0"
-description = "Extract rhythm-game chart data from EZ2ON gameplay videos"
+description = "EZ2Re:Chart — extract chart data from EZ2ON REBOOT : R gameplay videos"
 readme = "README.md"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ez2cv = "ez2cv.cli:main"
+ez2rc = "ez2rc.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]

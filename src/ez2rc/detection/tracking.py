@@ -1,5 +1,5 @@
 """
-EZ2CV — detection / tracking : scroll speed + NoteTracker + longnote pairing
+EZ2Re:Chart — detection / tracking : scroll speed + NoteTracker + longnote pairing
 ===============================================================================
 Stages 1 & 2 detect typed edges PER FRAME. A note is visible for ~25 frames, so
 it is detected ~25 times. This module collapses those repeated detections into
@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ez2cv.config import RunConfig
+from ez2rc.config import RunConfig
 # =============================================================================
 # Data structures
 # =============================================================================

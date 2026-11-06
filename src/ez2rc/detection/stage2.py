@@ -1,5 +1,5 @@
 """
-EZ2CV — detection / Stage 2 : constrained template matching
+EZ2Re:Chart — detection / Stage 2 : constrained template matching
 ===============================================================================
 Stage 2 turns Stage 1's brightness RUNS into typed, confirmed detections. For
 each run it runs cv2.matchTemplate in a narrow +-band around the run's relevant
@@ -32,9 +32,9 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ez2cv.config import RunConfig
-from ez2cv.video import LaneFrame, PreprocessedFrame
-from ez2cv.detection.stage1 import Run, Stage1Result
+from ez2rc.config import RunConfig
+from ez2rc.video import LaneFrame, PreprocessedFrame
+from ez2rc.detection.stage1 import Run, Stage1Result
 
 
 # =============================================================================

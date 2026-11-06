@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ez2cv.chart import build_chart
-from ez2cv.detection import DetectionPipeline
-from ez2cv.io import serialize_chart
+from ez2rc.chart import build_chart
+from ez2rc.detection import DetectionPipeline
+from ez2rc.io import serialize_chart
 from synthetic_video import make_fixture
 
 

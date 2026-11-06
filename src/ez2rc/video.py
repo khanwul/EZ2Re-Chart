@@ -21,8 +21,8 @@ Design invariants
 
 Usage
 -----
-    from ez2cv.config import load_config
-    from ez2cv.video import Preprocessor
+    from ez2rc.config import load_config
+    from ez2rc.video import Preprocessor
     pre = Preprocessor(load_config("config/song.toml"))
     for pf in pre:                       # one PreprocessedFrame per video frame
         for lane in pf.lanes:
@@ -40,7 +40,7 @@ from typing import Iterator
 import cv2
 import numpy as np
 
-from ez2cv.config import CHANNEL_EXTRACTORS, RunConfig
+from ez2rc.config import CHANNEL_EXTRACTORS, RunConfig
 
 
 ALIGNMENT_DEADBAND_PX = 2

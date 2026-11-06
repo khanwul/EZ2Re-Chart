@@ -1,5 +1,5 @@
 """
-EZ2CV — detection / measureline : bar-line (measure-line) detection
+EZ2Re:Chart — detection / measureline : bar-line (measure-line) detection
 ===============================================================================
 A measure line is the thin horizontal rule EZ2ON draws across the WHOLE
 playfield at every measure boundary. Unlike a note it is:
@@ -59,9 +59,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ez2cv.config import RunConfig
-from ez2cv.detection.stage1 import Stage1Result, _find_runs
-from ez2cv.detection.tracking import ScrollSpeedEstimator
+from ez2rc.config import RunConfig
+from ez2rc.detection.stage1 import Stage1Result, _find_runs
+from ez2rc.detection.tracking import ScrollSpeedEstimator
 
 
 # =============================================================================

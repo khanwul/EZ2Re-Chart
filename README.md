@@ -1,9 +1,14 @@
-# EZ2CV
+# EZ2Re:Chart
 
-EZ2CV extracts JSON chart data from EZ2ON REBOOT : R gameplay videos using
-OpenCV.
+EZ2Re:Chart (`ez2rc`) extracts JSON chart data from EZ2ON REBOOT : R gameplay
+videos using OpenCV.
 
 **This project does not include any data (gameplay video, chart, note skins, etc.) from EZ2ON REBOOT: R. If you wish to run this project, please obtain the data yourself.**
+
+## Development status
+
+v2 is in preparation on the `v2` branch. The v1 implementation is preserved
+under the `v1` tag. The instructions below describe the v1 pipeline.
 
 ## Requirements
 
@@ -63,8 +68,8 @@ values are `EZ`, `NM`, `HD`, and `SHD`.
 Run the full pipeline:
 
 ```bash
-uv run ez2cv
-uv run ez2cv "config/<song>.toml"
+uv run ez2rc
+uv run ez2rc "config/<song>.toml"
 ```
 
 `--force` accepts an FPS or alignment mismatch and records the fallback in the
@@ -76,7 +81,7 @@ The raw detection result is written before chart inference. Rebuild a chart
 without decoding the video again:
 
 ```bash
-uv run ez2cv "out/<song>/<difficulty>/<song>_raw.json" --from-raw
+uv run ez2rc "out/<song>/<difficulty>/<song>_raw.json" --from-raw
 ```
 
 ## Config layout
@@ -93,7 +98,7 @@ uv run ez2cv "out/<song>/<difficulty>/<song>_raw.json" --from-raw
 Two JSON files are written under `out/<song>/<difficulty>/`:
 
 - `<song>_raw.json` — reloadable ms-based detection checkpoint (schema 2.3)
-- `<song>_chart.json` — `ez2cv.chart` 3.3 tick chart with explicit game, tempo,
+- `<song>_chart.json` — `ez2rc.chart` 3.3 tick chart with explicit game, tempo,
   and meter timelines
 
 ## Tests

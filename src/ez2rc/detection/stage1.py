@@ -1,5 +1,5 @@
 """
-EZ2CV — detection / Stage 1 : projection + run detection
+EZ2Re:Chart — detection / Stage 1 : projection + run detection
 ===============================================================================
 Stage 1 is the HARD GATE of the detector. It compresses each lane's detection
 ROI into a 1D vertical signal and finds contiguous bright RUNS — not peaks.
@@ -26,8 +26,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ez2cv.config import RunConfig
-from ez2cv.video import LaneFrame, PreprocessedFrame
+from ez2rc.config import RunConfig
+from ez2rc.video import LaneFrame, PreprocessedFrame
 
 
 # =============================================================================

@@ -1,4 +1,4 @@
-# EZ2CV — skins/ez2on/skin.toml  (LAYER 1: skin definition)
+# EZ2Re:Chart — skins/ez2on/skin.toml  (LAYER 1: skin definition)
 # =============================================================================
 # Everything here is a property of the SKIN, not of the resolution.
 # Resolution-dependent pixel geometry lives in profiles/<res>/<keymode>.toml.

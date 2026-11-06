@@ -8,9 +8,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ez2cv.config import RunConfig
-from ez2cv.detection.stage1 import Stage1Result
-from ez2cv.detection.stage2 import Stage2Result
+from ez2rc.config import RunConfig
+from ez2rc.detection.stage1 import Stage1Result
+from ez2rc.detection.stage2 import Stage2Result
 
 # BGR colors
 _C_LANE    = (90, 90, 90)
@@ -287,13 +287,13 @@ def render_overlay_video(
     """Render detector decisions for an end-exclusive frame range."""
     # imports kept local so the static viz functions stay usable without the
     # pipeline imports being satisfied
-    from ez2cv.video import Preprocessor
-    from ez2cv.detection.stage1 import ProjectionDetector
-    from ez2cv.detection.stage2 import TemplateMatcher
-    from ez2cv.detection.tracking import NoteTracker
-    from ez2cv.detection.beat import BeatDetector
-    from ez2cv.detection.barline import MeasureLineDetector, MeasureLineTracker
-    from ez2cv.detection.pipeline import _frame_to_ms, _print_progress
+    from ez2rc.video import Preprocessor
+    from ez2rc.detection.stage1 import ProjectionDetector
+    from ez2rc.detection.stage2 import TemplateMatcher
+    from ez2rc.detection.tracking import NoteTracker
+    from ez2rc.detection.beat import BeatDetector
+    from ez2rc.detection.barline import MeasureLineDetector, MeasureLineTracker
+    from ez2rc.detection.pipeline import _frame_to_ms, _print_progress
 
     start, end = frame_range
     if not (0 <= start < end):
@@ -549,10 +549,10 @@ def _draw_overlay_frame(
 # =============================================================================
 
 if __name__ == "__main__":
-    from ez2cv.video import Preprocessor
-    from ez2cv.detection.stage1 import ProjectionDetector
-    from ez2cv.detection.stage2 import TemplateMatcher
-    from ez2cv.config import load_config
+    from ez2rc.video import Preprocessor
+    from ez2rc.detection.stage1 import ProjectionDetector
+    from ez2rc.detection.stage2 import TemplateMatcher
+    from ez2rc.config import load_config
 
     cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     arg2 = sys.argv[2] if len(sys.argv) > 2 else "150"

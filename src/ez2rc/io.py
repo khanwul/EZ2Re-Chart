@@ -6,18 +6,18 @@ import json
 import math
 from pathlib import Path
 
-from ez2cv.chart import Chart, ChartNote
-from ez2cv.chart.clock import BPMSegment
-from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.detection import RawChart
-from ez2cv.detection.barline import BarlineEvent
-from ez2cv.detection.beat import BeatEvent
-from ez2cv.detection.tracking import RawNote
+from ez2rc.chart import Chart, ChartNote
+from ez2rc.chart.clock import BPMSegment
+from ez2rc.chart.meter import TimeSignature, TimeSigVariant
+from ez2rc.detection import RawChart
+from ez2rc.detection.barline import BarlineEvent
+from ez2rc.detection.beat import BeatEvent
+from ez2rc.detection.tracking import RawNote
 
 
 RAW_SCHEMA_VERSION = "2.3"
 RAW_READABLE_VERSIONS = {"2.1", "2.2", "2.3"}
-CHART_FORMAT = "ez2cv.chart"
+CHART_FORMAT = "ez2rc.chart"
 CHART_VERSION = "3.3"
 CHART_READABLE_VERSIONS = {"3.1", "3.2", "3.3"}
 

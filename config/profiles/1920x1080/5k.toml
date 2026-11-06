@@ -1,4 +1,4 @@
-# EZ2CV — profiles/1920x1080/5k.toml  (LAYER 1: geometry calibration)
+# EZ2Re:Chart — profiles/1920x1080/5k.toml  (LAYER 1: geometry calibration)
 # =============================================================================
 # Pixel geometry for ONE (resolution, key_mode) pair. All numbers here are in
 # native pixels for 1920x1080 — they are NOT scaled by the resolver.

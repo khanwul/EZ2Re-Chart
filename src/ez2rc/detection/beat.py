@@ -1,5 +1,5 @@
 """
-EZ2CV — detection / beat : POW LED beat detection
+EZ2Re:Chart — detection / beat : POW LED beat detection
 ===============================================================================
 The EZ2ON playfield carries a "POW" indicator LED that flashes on every beat.
 Captured, its brightness traces a clean SAWTOOTH: a one-frame spike UP on the
@@ -48,8 +48,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ez2cv.config import RunConfig
-from ez2cv.video import PreprocessedFrame
+from ez2rc.config import RunConfig
+from ez2rc.video import PreprocessedFrame
 
 
 # =============================================================================
