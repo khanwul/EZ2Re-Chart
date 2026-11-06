@@ -133,9 +133,11 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                        f"<p><a href='{escape(decode_ref, quote=True)}'>Interval candidates and costs</a></p>")
     rows = "".join(f"<tr><td>{p['lane'] + 1}</td><td>{escape(p['status'])}</td>"
                    f"<td>{escape(', '.join(str(c['start_px']) + ' → ' + str(c['end_px']) for c in p['selected_intervals']) or 'noise alternative')}</td>"
-                   f"<td>{p['selected_cost']:.3f} / {p['alternative_cost']:.3f}</td></tr>" for p in pixel_intervals)
+                   f"<td>{p['selected_cost']:.3f} / {p['alternative_cost']:.3f}</td>"
+                   f"<td>{escape(', '.join(p.get('review_causes', ())) or '—')}</td></tr>" for p in pixel_intervals)
     pixel_table = ("<table><caption>Relative pixel intervals; costs cover the whole lane</caption>"
-                   "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th></tr>"
+                   "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th>"
+                   "<th>Review causes in competing hypotheses</th></tr>"
                    f"{rows}</table>") if rows else ""
     report = ("<!doctype html><html lang='en'><meta charset='utf-8'>"
               f"<title>{escape(chart.metadata.title)} — EZ2Re:Chart</title>"

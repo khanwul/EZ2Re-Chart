@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import heapq
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,7 @@ from .contracts import Event
 from .motion import STATUS, timeline
 from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
 
-VERSION = "lane-interval-dp-1"
+VERSION = "lane-interval-dp-2"
 KINDS = ("tap", "head", "tail")
 
 
@@ -146,13 +147,15 @@ class BodyEvidence:
         last = int(self.frame_max[left:right].max()) if right > left else None
         uncertain = (first is not None and bool(np.any(
             (self.ambiguous_frames >= first) & (self.ambiguous_frames <= last))))
+        support = max(0., float(bright)) / max(length, self.grid, self.config.body_support_px)
         return {'range_px': [float(start), float(end)], 'bright_px': max(0., float(bright)),
                 'absent_px': max(0., float(dark)), 'unavailable_px': unavailable,
+                'support_fraction': support,
                 'fusion_error_px': float(self.errors[left:right].max()) if right > left else None,
                 'frame_bounds': [first, last], 'motion_ambiguous': uncertain,
                 'cost': float(self.config.absence_cost_per_px * max(0., dark)
                               + self.config.unavailable_cost_per_px * unavailable
-                              - self.config.body_reward * max(0., bright) / max(length, self.grid)),
+                              - self.config.body_reward * support),
                 'evidence_ref': {'kind': 'body', 'bin_start': int(np.floor(start / self.grid)),
                                  'bin_end_exclusive': int(np.ceil(end / self.grid))}}
 
@@ -174,6 +177,61 @@ def _clusters(q, radius):
         at = end
 
 
+def _associated_clusters(anchor, primary, scores, frames, usable, config):
+    """Anchor sites on usable peaks before attaching weak observations.
+
+    Weak rows cannot set the cut between two strong observations. A site's
+    diameter is still bounded, and distinct strong same-kind peaks observed in
+    one frame cannot merge. Exact same-frame maxima from duplicate seeds can.
+    This is a spatial association heuristic, not a calibrated tracking model.
+    """
+    strength = scores[np.arange(len(scores)), primary]
+    strong = usable & (strength >= config.association_similarity)
+    order = sorted(np.flatnonzero(strong), key=lambda i: (-strength[i], int(i)))
+    spatial = np.argsort(anchor, kind='stable')
+    coordinates = anchor[spatial]
+    assigned = np.zeros(len(anchor), bool)
+    diameter = 2 * config.endpoint_radius_px
+    groups = []
+    for seed in order:
+        if assigned[seed]:
+            continue
+        lo = np.searchsorted(coordinates, anchor[seed] - diameter, side='left')
+        hi = np.searchsorted(coordinates, anchor[seed] + diameter, side='right')
+        nearby = [i for i in spatial[lo:hi] if strong[i] and not assigned[i]]
+        nearby.sort(key=lambda i: (abs(anchor[i] - anchor[seed]), -strength[i], int(i)))
+        rows, peaks = [], {}
+        lower = upper = anchor[seed]
+        for i in nearby:
+            a, b = min(lower, anchor[i]), max(upper, anchor[i])
+            key = (int(frames[i]), int(primary[i]))
+            if b - a > diameter or key in peaks and abs(peaks[key] - anchor[i]) > 1e-7:
+                continue
+            rows.append(int(i)); peaks[key] = anchor[i]; assigned[i] = True
+            lower, upper = a, b
+        groups.append({'rows': rows, 'center': float(np.median(list(peaks.values()))),
+                       'lower': lower, 'upper': upper})
+    groups.sort(key=lambda g: g['center'])
+    centers = np.array([g['center'] for g in groups])
+    # Fixed strong centers prevent weak attachment from moving an anchor.
+    for i in sorted(np.flatnonzero(~strong), key=lambda i: (-strength[i], int(i))):
+        lo = np.searchsorted(centers, anchor[i] - diameter, side='left')
+        hi = np.searchsorted(centers, anchor[i] + diameter, side='right')
+        choices = [j for j in range(lo, hi) if
+                   max(groups[j]['upper'], anchor[i]) - min(groups[j]['lower'], anchor[i]) <= diameter]
+        if choices:
+            j = min(choices, key=lambda j: (abs(centers[j] - anchor[i]), j))
+            g = groups[j]
+            g['rows'].append(int(i)); assigned[i] = True
+            g['lower'], g['upper'] = min(g['lower'], anchor[i]), max(g['upper'], anchor[i])
+    result = [(np.array(g['rows']), g['center'], 'supported_peak') for g in groups]
+    remaining = np.flatnonzero(~assigned)
+    for cluster in _clusters(anchor[remaining], config.endpoint_radius_px):
+        rows = remaining[cluster]
+        result.append((rows, float(np.median(anchor[rows])), 'weak_only'))
+    return sorted(result, key=lambda item: (item[1], int(item[0].min())))
+
+
 def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
     if not len(scores):
         return [], []
@@ -184,7 +242,11 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
     sites, endpoints = [], []
     frames = ledger['endpoint_index'][:, 0]
     clock_index = np.searchsorted(clock['frame_id'], frames)
-    for cluster in _clusters(anchor, config.endpoint_radius_px):
+    at = np.arange(len(scores))
+    interior = ledger.get('endpoint_peak_interior', np.ones((len(scores), 3), bool))
+    usable = (((flags[at, primary] & 11) == 0) & (ledger['endpoint_weight'][at, primary] > 0)
+              & interior[at, primary])
+    for cluster, center, association in _associated_clusters(anchor, primary, scores, frames, usable, config):
         # A tail and a distinct co-observed onset may touch. Tap/head are
         # competing onsets and stay exclusive, as do same-kind duplicate seeds.
         # Across frames, a changing winning kind alone does not split a site.
@@ -195,7 +257,8 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
             if not len(rows):
                 continue
             site_id = f'l{lane}:s{len(sites)}'
-            site = {'id': site_id, 'anchor_px': float(np.median(anchor[rows])),
+            site = {'id': site_id, 'anchor_px': center, 'association': association,
+                    'anchor_range_px': [float(anchor[rows].min()), float(anchor[rows].max())],
                     'primary_kind': KINDS[int(np.argmax(np.bincount(primary[rows], minlength=3)))],
                     'endpoint_ids': []}
             for kind in range(3):
@@ -218,7 +281,14 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
                     usable = ((flags[indices, kind] & 11) == 0) & (ledger['endpoint_weight'][indices, kind] > 0)
                     localized = indices[usable]
                     coords = ledger['endpoint_q'][localized if len(localized) else indices, kind]
-                    q = float(np.median(coords))
+                    location_reps, location_groups = [], set()
+                    for i in order:
+                        group = int(ledger['endpoint_group'][i])
+                        if (flags[i, kind] & 11) == 0 and ledger['endpoint_weight'][i, kind] > 0 and group not in location_groups:
+                            location_reps.append(i); location_groups.add(group)
+                    if not location_reps:
+                        location_reps = representatives
+                    q = float(np.median(ledger['endpoint_q'][location_reps, kind]))
                     refs = [f'f{int(frames[i])}:l{lane}:y{int(ledger["endpoint_index"][i, 2])}' for i in indices]
                     shared = float(clock['error_px'][clock_index[indices]].max())
                     error = float(ledger['endpoint_error_px'][indices, kind].max())
@@ -233,6 +303,8 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
                           'motion_ambiguous': bool(np.any(clock['status'][clock_index[indices]] == STATUS['ambiguous'])),
                           'motion_frame_ids': sorted(set(int(frames[i]) for i in indices)),
                           'observation_ids': refs,
+                          'search_boundary_observation_ids': [ref for ref, i in zip(refs, indices)
+                                                              if not interior[i, kind]],
                           'evidence_refs': [f'l{lane}:q{b}:k{kind}' for b in sorted({b for i in indices
                               if ledger['endpoint_weight'][i, kind] > 0
                               for b in (int(np.floor(ledger['endpoint_q'][i, kind] / meta['grid_px'])),
@@ -241,6 +313,18 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
                     endpoints.append(ep); site['endpoint_ids'].append(ep['id'])
             sites.append(site)
     return sites, endpoints
+
+
+def interval_cost(endpoints, missing, body, config):
+    """Auditable additive costs; neither similarities nor costs are probabilities."""
+    reward = config.body_reward if endpoints else config.body_only_reward
+    return {'note': config.note_cost,
+            'endpoint_support': -config.endpoint_reward * sum(e['utility'] for e in endpoints),
+            'additional_endpoint': config.additional_endpoint_cost * max(0, len(endpoints) - 1),
+            'missing_endpoint': config.missing_endpoint_cost * missing,
+            'body_support': -reward * body['support_fraction'] if body else 0.,
+            'body_absence': config.absence_cost_per_px * body['absent_px'] if body else 0.,
+            'body_unavailable': config.unavailable_cost_per_px * body['unavailable_px'] if body else 0.}
 
 
 def interval_candidates(lane, sites, endpoints, body, config):
@@ -285,14 +369,7 @@ def interval_candidates(lane, sites, endpoints, body, config):
         summary = body.summary(q0, q1) if kind == 'longnote' else None
         missing = (int(start is None or start['q_px'] is None)
                    + (int(end is None or end['q_px'] is None) if kind == 'longnote' else 0))
-        cost = config.note_cost - config.endpoint_reward * sum(e['utility'] for e in es)
-        # A second endpoint is another assertion, not a free extra reward.
-        # This also compares a weak head + tap-like tail against a strong tap.
-        cost += config.additional_endpoint_cost * max(0, len(es) - 1)
-        cost += config.missing_endpoint_cost * missing + (summary['cost'] if summary else 0.)
-        if not es and summary:
-            cost -= ((config.body_only_reward - config.body_reward) * summary['bright_px']
-                     / max(q1 - q0, body.grid))
+        terms = interval_cost(es, missing, summary, config)
         footprint = [x for e in es for x in (by_site[e['site_id']]['lo'], by_site[e['site_id']]['hi'])]
         if bounds:
             footprint.extend((int(np.searchsorted(token_coordinates, q0, side='left')),
@@ -300,7 +377,8 @@ def interval_candidates(lane, sites, endpoints, body, config):
         c = {'id': f'l{lane}:c{len(candidates)}', 'lane': lane, 'type': kind,
              'start': start['id'] if start else None, 'end': end['id'] if end else None,
              'start_px': start['q_px'] if start else None, 'end_px': end['q_px'] if end else None,
-             'lo': min(footprint), 'hi': max(footprint), 'cost': float(cost),
+             'lo': min(footprint), 'hi': max(footprint), 'cost': math.fsum(terms.values()),
+             'cost_terms': terms,
              'missing_endpoints': missing, 'body': summary,
              'endpoint_site_ids': [e['site_id'] for e in es]}
         for name, endpoint, at_edge in (
@@ -345,9 +423,7 @@ def interval_candidates(lane, sites, endpoints, body, config):
     return tokens, candidates, omitted
 
 
-def summarize_lane(lane, sites, endpoints, body, config):
-    tokens, candidates, omitted = interval_candidates(lane, sites, endpoints, body, config)
-    best = ordered_dp(len(tokens), candidates, config.ambiguity_cost)
+def review_events(lane, candidates, endpoints, config, best):
     by_id = {e['id']: e for e in endpoints}
     active = sorted((c for c in candidates if c['competitive']), key=lambda c: (c['lo'], c['hi'], c['id']))
     components = []
@@ -368,15 +444,46 @@ def summarize_lane(lane, sites, endpoints, body, config):
         motion_ambiguous |= any(c['body'] and c['body']['motion_ambiguous'] for c in group)
         ambiguous = bool(alternatives or alt_cost - best <= config.ambiguity_cost + 1e-10 or motion_ambiguous)
         status = 'incomplete' if missing else 'ambiguous' if ambiguous else 'resolved'
+        # These are inspectable properties of competing hypotheses, not labels
+        # claiming that a physical note is missing or that an occlusion occurred.
+        causes = set()
+        if len({c['type'] for c in group}) > 1:
+            causes.add('kind_conflict')
+        for name in ('start', 'end'):
+            for kind in KINDS:
+                eps = {c[name]: by_id[c[name]] for c in group if c[name] and by_id[c[name]]['kind'] == kind}
+                if len({e['observed_q_px'] for e in eps.values()}) > 1:
+                    causes.add('coordinate_alternatives')
+                if len({e['site_id'] for e in eps.values()}) > 1:
+                    causes.add('site_alternatives')
+            causes.update(c[f'missing_{name}_reason'] for c in group if c[f'missing_{name}_reason'])
+        if any(c['body'] and c['body']['bright_px'] < config.body_support_px for c in group):
+            causes.add('limited_body_support')
+        if any(c['start'] is None and c['end'] is None for c in group):
+            causes.add('body_only_hypothesis')
+        if not selected or any(c['exclusion_cost'] - best <= config.ambiguity_cost + 1e-10 for c in selected):
+            causes.add('selection_alternative')
+        if motion_ambiguous:
+            causes.add('motion_alternatives')
+        if any(by_id[e].get('search_boundary_observation_ids') for c in group for e in (c['start'], c['end']) if e):
+            causes.add('search_window_boundary')
         events.append({'id': f'l{lane}:e{len(events)}', 'lane': lane, 'status': status,
                        'selected_candidate_ids': [c['id'] for c in selected],
                        'candidate_ids': [c['id'] for c in group],
                        'selected_cost': best, 'alternative_cost': float(alt_cost),
                        'cost_scope': 'whole lane, including noise',
+                       'review_causes': sorted(causes),
                        'has_alternatives': ambiguous, 'motion_ambiguous': bool(motion_ambiguous),
                        'reason': ('missing or clipped endpoint' if missing else
                                   'near-cost interpretations, noise, or motion alternatives' if ambiguous else
                                   'pixel interval selected; timing is separate')})
+    return events
+
+
+def summarize_lane(lane, sites, endpoints, body, config):
+    tokens, candidates, omitted = interval_candidates(lane, sites, endpoints, body, config)
+    best = ordered_dp(len(tokens), candidates, config.ambiguity_cost)
+    events = review_events(lane, candidates, endpoints, config, best)
     return {'format': 'ez2rc.decode-lane', 'schema_version': 1, 'lane': lane,
             'sites': sites, 'endpoints': endpoints, 'candidates': candidates, 'events': events,
             'best_cost': best, 'token_count': len(tokens), 'noise_dominated_pair_count': omitted,
@@ -387,7 +494,7 @@ def summarize_lane(lane, sites, endpoints, body, config):
 def _lane_input(observations, fusion, lane):
     # Only scalar endpoint records and one lane of cells remain resident. Dense
     # per-frame images/projections are discarded as each source chunk is read.
-    obs = {k: [] for k in ('candidate_index', 'scores', 'flags')}
+    obs = {k: [] for k in ('candidate_index', 'scores', 'flags', 'positions')}
     for chunk in observations.chunks():
         keep = chunk['candidate_index'][:, 1] == lane
         for k in obs:
@@ -403,6 +510,15 @@ def _lane_input(observations, fusion, lane):
     cells = {k: np.concatenate(v) for k, v in cells.items()}
     if not np.array_equal(obs['candidate_index'], ledger['endpoint_index']):
         raise ValueError('decode endpoint ledger does not match original observations')
+    # A maximum at the edge of a seed's search window is not evidence of a
+    # second local peak: another seed may see the higher adjacent maximum.
+    # Preserve it, but do not let it split a supported site. This uses raw
+    # screen coordinates, independently of kind-specific timing corrections.
+    radius = observations.manifest['key']['parameters'].get('algorithm', {}).get('search_radius_px')
+    if radius is not None:
+        top = observations.manifest['metadata']['profile']['lanes'][lane]['roi'][1]
+        seeds = obs['candidate_index'][:, 2] + top
+        ledger['endpoint_peak_interior'] = np.abs(obs['positions'][:, :, 1] - seeds[:, None]) < radius
     order = np.argsort(cells['index'][:, 1], kind='stable')
     return ledger, obs['scores'], obs['flags'], {k: v[order] for k, v in cells.items()}
 
@@ -459,6 +575,7 @@ def open_decode(path, expected_key=None):
                 or key['parents'] != [meta[f'{s}_cache_id'] for s in ('observation', 'motion', 'fusion')]):
             raise CacheError('unsupported decode cache/lineage')
         counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
+        config = DecodeConfig(**key['parameters'])
         candidate_count = endpoint_count = 0
         lane_count = 0
         for lane, data in enumerate(lanes(cache)):
@@ -467,15 +584,33 @@ def open_decode(path, expected_key=None):
             eps = {e['id']: e for e in data['endpoints']}
             cs = {c['id']: c for c in data['candidates']}
             sites = {s['id']: s for s in data['sites']}
-            if len(eps) != len(data['endpoints']) or len(cs) != len(data['candidates']):
+            if (len(eps) != len(data['endpoints']) or len(cs) != len(data['candidates'])
+                    or len(sites) != len(data['sites'])):
                 raise CacheError('duplicate decode identities')
+            owners = {}
+            memberships = {sid: set() for sid in sites}
+            for e in eps.values():
+                if e['site_id'] not in memberships:
+                    raise CacheError('dangling endpoint site')
+                memberships[e['site_id']].add(e['id'])
+            for s in sites.values():
+                if (not s['endpoint_ids'] or len(set(s['endpoint_ids'])) != len(s['endpoint_ids'])
+                        or set(s['endpoint_ids']) != memberships[s['id']]
+                        or not 0 <= s['anchor_range_px'][1] - s['anchor_range_px'][0] <= 2 * config.endpoint_radius_px):
+                    raise CacheError('invalid endpoint site')
             for e in eps.values():
                 if (e['kind'] not in KINDS or e['site_id'] not in sites
                         or e['id'] not in sites[e['site_id']]['endpoint_ids']
                         or e['observed_range_px'][0] > e['observed_range_px'][1]
                         or not 0 <= e['utility'] <= 1 or e['weight'] < 0
-                        or e['shared_motion_error_px'] < 0 or e['fusion_error_px'] < 0):
+                        or e['shared_motion_error_px'] < 0 or e['fusion_error_px'] < 0
+                        or not e['observed_range_px'][0] <= e['observed_q_px'] <= e['observed_range_px'][1]
+                        or not set(e['search_boundary_observation_ids']) <= set(e['observation_ids'])):
                     raise CacheError('invalid endpoint hypothesis')
+                for ref in e['observation_ids']:
+                    if ref in owners and owners[ref] != e['site_id']:
+                        raise CacheError('observation shared between endpoint sites')
+                    owners[ref] = e['site_id']
             used, last = set(), -1
             for c in sorted(cs.values(), key=lambda c: c['lo']):
                 if (not np.isfinite(c['cost']) or not 0 <= c['lo'] <= c['hi'] < data['token_count']
@@ -495,6 +630,10 @@ def open_decode(path, expected_key=None):
                     raise CacheError('tap with end')
                 if c['start_px'] is not None and c['end_px'] is not None and c['end_px'] <= c['start_px']:
                     raise CacheError('reversed longnote')
+                terms = interval_cost([eps[e] for e in (c['start'], c['end']) if e],
+                                      c['missing_endpoints'], c['body'], config)
+                if c['cost_terms'] != terms or c['cost'] != math.fsum(terms.values()):
+                    raise CacheError('invalid interval cost terms')
                 if c['selected']:
                     resources = set(c['endpoint_site_ids'])
                     if c['lo'] <= last or resources & used:
@@ -520,6 +659,8 @@ def open_decode(path, expected_key=None):
                     raise CacheError('resolved pixel event lacks endpoints')
             if len(emitted) != len(set(emitted)) or set(emitted) != {c['id'] for c in cs.values() if c['competitive']}:
                 raise CacheError('competitive intervals hidden or duplicated')
+            if data['events'] != review_events(lane, data['candidates'], data['endpoints'], config, data['best_cost']):
+                raise CacheError('invalid pixel review diagnostics')
             candidate_count += len(cs); endpoint_count += len(eps); lane_count += 1
         if (lane_count != meta['lane_count'] or counts != meta['event_status_counts']
                 or candidate_count != meta['candidate_count'] or endpoint_count != meta['endpoint_count']):

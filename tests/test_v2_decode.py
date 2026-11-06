@@ -1,6 +1,7 @@
 from dataclasses import replace
 import itertools
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ from ez2rc.v2.fusion import accumulate
 from ez2rc.v2.motion import estimate
 from ez2rc.v2.runner import execute
 from ez2rc.v2.storage import CacheError, canonical, digest, file_hash, write_json
-from v2_decode_fixtures import scene, selected
+from v2_decode_fixtures import associate, scene, selected
 from v2_motion_fixtures import observations
 from v2_fixtures import fixture
 
@@ -56,8 +57,80 @@ class IntervalDPTest(unittest.TestCase):
     def test_tap_sprite_brightness_and_weak_head_do_not_force_short_longnote(self):
         data = scene([(20, [.14, .14, .14]), (26, [.99, .56, .72])], [(20, 26)])
         self.assertEqual(selected(data), [('tap', 26., None)])
-        self.assertTrue(any(c['type'] == 'longnote' and c['competitive'] for c in data['candidates']))
-        self.assertEqual(data['events'][0]['status'], 'ambiguous')
+        self.assertTrue(any(c['type'] == 'longnote' for c in data['candidates']))
+        self.assertEqual(data['events'][0]['status'], 'resolved')
+        old_reward = scene([(20, [.14, .14, .14]), (26, [.99, .56, .72])], [(20, 26)],
+                           config=DecodeConfig(body_support_px=1))
+        self.assertEqual(old_reward['events'][0]['status'], 'ambiguous')
+
+    def test_weak_spatial_boundary_cannot_split_a_supported_endpoint(self):
+        rows = [(0, 17., [.15, .1, .1]), (1, 20., [.96, .1, .1]), (2, 21.5, [.99, .1, .1])]
+        sites, eps = associate(rows)
+        strong = [e for e in eps if e['kind'] == 'tap' and e['score'] > .7]
+        self.assertEqual(len(strong), 1)
+        self.assertEqual(strong[0]['observed_range_px'], [20., 21.5])
+        self.assertEqual(len({r for e in eps for r in e['observation_ids']}), 3)
+        self.assertTrue(all(s['anchor_range_px'][1] - s['anchor_range_px'][0] <= 4 for s in sites))
+
+    def test_coobserved_distinct_peaks_survive_inside_association_radius(self):
+        data = scene([(20, 0), (22, 0), (20, 0)])
+        self.assertEqual(selected(data), [('tap', 20., None), ('tap', 22., None)])
+        self.assertEqual(len(data['sites']), 2)
+        self.assertTrue(all(e['weight'] == 1.5 for e in data['endpoints']))
+
+    def test_search_window_edge_response_is_not_a_distinct_peak(self):
+        # A neighboring seed's search ends one pixel before the true maximum.
+        # Both responses are strong, but only one is an interior local maximum.
+        rows = [(0, 20, [.1, .1, .99]), (0, 19, [.1, .1, .95]), (1, 20.5, [.1, .1, .98])]
+        sites, eps = associate(rows, interior=[[1, 1, 1], [0, 0, 0], [1, 1, 1]])
+        self.assertEqual(len(sites), 1)
+        tail = next(e for e in eps if e['kind'] == 'tail')
+        self.assertEqual(len(tail['observation_ids']), 3)
+        self.assertEqual(tail['search_boundary_observation_ids'], ['f0:l0:y1'])
+        self.assertEqual(tail['weight'], 1.)
+        # The same two coordinates with independent interior maxima stay split.
+        self.assertEqual(len(associate(rows)[0]), 2)
+
+    def test_association_does_not_chain_across_dense_observations(self):
+        sites, _ = associate([(0, 20, [.99, .1, .1]), (1, 23, [.98, .1, .1]),
+                              (2, 26, [.97, .1, .1]), (3, 29, [.96, .1, .1])])
+        self.assertEqual(len(sites), 2)
+        self.assertTrue(all(s['anchor_range_px'][1] - s['anchor_range_px'][0] <= 4 for s in sites))
+
+    def test_duplicate_seeds_and_repeats_do_not_move_endpoint_center(self):
+        rows = [(0, 20, [.99, .1, .1]), (1, 21, [.99, .1, .1]), (2, 22, [.99, .1, .1])]
+        _, original = associate(rows)
+        _, repeated = associate(rows + [(3, 20, [.99, .1, .1])] * 12, groups=[0, 1, 2] + [0] * 12)
+        for a, b in zip(original, repeated):
+            self.assertEqual(a['q_px'], b['q_px'])
+            self.assertEqual(a['weight'], b['weight'])
+            self.assertEqual(a['shared_motion_error_px'], b['shared_motion_error_px'])
+
+    def test_tap_brightness_does_not_add_a_missing_head_fragment(self):
+        points = [(30, [.1, .1, .344]), (43, [.954, .56, .736])]
+        data = scene(points, [(21, 43)])
+        self.assertEqual(selected(data), [('tap', 43., None)])
+        self.assertTrue(any(c['missing_endpoints'] for c in data['candidates']))
+        old = scene(points, [(21, 43)], config=DecodeConfig(body_support_px=1))
+        self.assertIn(('longnote', None, 30.), selected(old))
+
+    def test_short_body_only_noise_and_real_short_longnote_are_distinguished(self):
+        self.assertEqual(selected(scene([], [(20, 22)])), [])
+        data = scene([(50, 1), (51, 2)], [(50, 51)])
+        self.assertEqual(selected(data), [('longnote', 50., 51.)])
+        c = next(c for c in data['candidates'] if c['selected'])
+        self.assertAlmostEqual(c['cost_terms']['body_support'], -1 / 24)
+        self.assertTrue(all(c['cost'] == math.fsum(c['cost_terms'].values()) for c in data['candidates']))
+
+    def test_review_causes_distinguish_hypotheses_and_timing(self):
+        data = scene([(20, [.99, .99, .1]), (80, 2)], [(20, 80)], ambiguous_motion=True)
+        self.assertTrue(all('motion_alternatives' in e['review_causes'] for e in data['events']))
+        boundary = scene([], [(0, 200)])
+        self.assertIn('coverage_boundary', boundary['events'][0]['review_causes'])
+        self.assertIn('body_only_hypothesis', boundary['events'][0]['review_causes'])
+        interior = scene([(80, 2)], [(20, 80)])
+        self.assertIn('missing_endpoint', interior['events'][0]['review_causes'])
+        self.assertNotIn('coverage_boundary', interior['events'][0]['review_causes'])
 
     def test_longnote_interior_is_exclusive_and_touching_ends_are_allowed(self):
         data = scene([(20, 1), (50, 0), (80, 2), (80, 1), (140, 2)], [(20, 140)])
@@ -178,21 +251,26 @@ class IntervalDPTest(unittest.TestCase):
             m, _ = estimate(obs, MotionConfig(), root)
             f, _ = accumulate(obs, m, FusionConfig(), root)
             d, _ = infer(obs, m, f, DecodeConfig(), root)
-            data = next(lanes(d))
-            selected_edge = next(c for c in data['candidates'] if c['selected'])
-            selected_edge['path_cost'] += 20
-            chunk = d.path / 'chunk-000000.npz'
-            np.savez_compressed(chunk, payload=np.frombuffer(canonical(data), dtype=np.uint8))
-            manifest = d.manifest
-            manifest['chunks'][0]['sha256'] = file_hash(chunk)
-            with np.load(chunk) as a:
-                manifest['chunks'][0]['arrays']['payload']['shape'] = list(a['payload'].shape)
-            manifest['manifest_sha256'] = digest({k:v for k,v in manifest.items() if k != 'manifest_sha256'})
-            write_json(d.path / 'manifest.json', manifest)
-            with self.assertRaisesRegex(CacheError, 'alternative cost'): open_decode(d.path)
-            repaired, hit = infer(obs, m, f, DecodeConfig(), root)
-            self.assertFalse(hit)
-            self.assertTrue(list(lanes(repaired)))
+            for field, message in (('path', 'alternative cost'), ('terms', 'cost terms'),
+                                   ('review', 'review diagnostics')):
+                with self.subTest(field=field):
+                    data = next(lanes(d))
+                    selected_edge = next(c for c in data['candidates'] if c['selected'])
+                    if field == 'path': selected_edge['path_cost'] += 20
+                    elif field == 'terms': selected_edge['cost_terms']['note'] += 20
+                    else: data['events'][0]['review_causes'] = ['invented cause']
+                    chunk = d.path / 'chunk-000000.npz'
+                    np.savez_compressed(chunk, payload=np.frombuffer(canonical(data), dtype=np.uint8))
+                    manifest = d.manifest
+                    manifest['chunks'][0]['sha256'] = file_hash(chunk)
+                    with np.load(chunk) as a:
+                        manifest['chunks'][0]['arrays']['payload']['shape'] = list(a['payload'].shape)
+                    manifest['manifest_sha256'] = digest({k:v for k,v in manifest.items() if k != 'manifest_sha256'})
+                    write_json(d.path / 'manifest.json', manifest)
+                    with self.assertRaisesRegex(CacheError, message): open_decode(d.path)
+                    d, hit = infer(obs, m, f, DecodeConfig(), root)
+                    self.assertFalse(hit)
+                    self.assertTrue(list(lanes(d)))
 
     def test_endpoint_support_respects_fusion_group_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -233,6 +311,7 @@ class IntervalDPTest(unittest.TestCase):
     def test_decode_config_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'algorithm.toml'
-            for text in ('note_cost = true', 'body_bright = 0.01', 'endpoint_radius_px = 0', 'unknown = 3'):
+            for text in ('note_cost = true', 'body_bright = 0.01', 'endpoint_radius_px = 0', 'unknown = 3',
+                         'association_similarity = 1.1', 'body_support_px = 0'):
                 path.write_text('schema_version = 1\n[decode]\n' + text)
                 with self.assertRaises(ConfigError): load_algorithm(path)

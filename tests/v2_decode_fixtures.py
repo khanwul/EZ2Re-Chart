@@ -50,3 +50,20 @@ def scene(points, bodies=(), *, unavailable=(), occluded=(), absent=(), bounds=(
 
 def selected(data):
     return [(c['type'], c['start_px'], c['end_px']) for c in data['candidates'] if c['selected']]
+
+
+def associate(rows, *, groups=None, interior=None, config=None):
+    """Independent frame peaks: (frame ID, coordinate, tap/head/tail scores)."""
+    frames = np.array([r[0] for r in rows], np.int64)
+    count = int(frames.max()) + 1
+    ledger = {'endpoint_index': np.column_stack((frames, np.zeros(len(rows), int), np.arange(len(rows)))),
+              'endpoint_q': np.repeat(np.array([r[1] for r in rows], float)[:, None], 3, axis=1),
+              'endpoint_weight': np.full((len(rows), 3), .5),
+              'endpoint_error_px': np.full((len(rows), 3), 3.),
+              'endpoint_group': frames if groups is None else np.array(groups)}
+    if interior is not None:
+        ledger['endpoint_peak_interior'] = np.array(interior, bool)
+    clock = {'frame_id': np.arange(count), 'error_px': np.full(count, 3.), 'status': np.ones(count, int)}
+    meta = {'grid_px': 1., 'endpoint_timing_error_px': [None] * 3}
+    return endpoint_sites(0, ledger, np.array([r[2] for r in rows]),
+                          np.zeros((len(rows), 3), np.uint8), clock, meta, config or DecodeConfig())

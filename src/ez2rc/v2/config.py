@@ -128,12 +128,14 @@ class FusionConfig:
 @dataclass(frozen=True)
 class DecodeConfig:
     endpoint_radius_px: float = 2.0
+    association_similarity: float = 0.70
     support_weight: float = 1.0
     note_cost: float = 0.8
     endpoint_reward: float = 2.0
     additional_endpoint_cost: float = 1.0
     body_reward: float = 1.0
     body_only_reward: float = 3.0
+    body_support_px: float = 24.0
     body_bright: float = 0.20
     body_dark: float = 0.08
     absence_cost_per_px: float = 0.12
@@ -144,9 +146,11 @@ class DecodeConfig:
     def __post_init__(self):
         for key in self.__dataclass_fields__:
             number(getattr(self, key), key, 0)
-        for key in ("endpoint_radius_px", "support_weight", "absence_cost_per_px",
+        for key in ("endpoint_radius_px", "support_weight", "body_support_px", "absence_cost_per_px",
                     "unavailable_cost_per_px"):
             number(getattr(self, key), key, 0.001)
+        if not 0 < self.association_similarity <= 1:
+            raise ConfigError("decode association_similarity must be in (0, 1]")
         if not 0 <= self.body_dark < self.body_bright <= 1:
             raise ConfigError("decode body thresholds must satisfy 0 <= dark < bright <= 1")
 
