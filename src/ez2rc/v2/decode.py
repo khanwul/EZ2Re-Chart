@@ -21,7 +21,7 @@ from .contracts import Event
 from .motion import STATUS, timeline
 from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
 
-VERSION = "lane-interval-dp-2"
+VERSION = "lane-interval-dp-3"
 KINDS = ("tap", "head", "tail")
 
 
@@ -108,6 +108,8 @@ class BodyEvidence:
     Positive weight and dark brightness is absence. Occluded/clipped/effect
     contributions and holes are unavailable, with a separate, smaller cost.
     No duration is rewarded without bound: support reward is a fraction.
+    Brightness and observation support remain separate: a bright cell with
+    little usable weight is neither sustained evidence nor observed darkness.
     """
     def __init__(self, cells, grid, config, clock=None):
         self.grid, self.config = grid, config
@@ -123,8 +125,12 @@ class BodyEvidence:
         trust = np.divide(visible, w, out=np.zeros_like(w), where=w > 0)
         bright = np.clip((mean - config.body_dark) / (config.body_bright - config.body_dark), 0, 1) * trust
         dark = np.clip((config.body_bright - mean) / (config.body_bright - config.body_dark), 0, 1) * trust
-        self.values = np.column_stack((bright, dark, trust))
-        self.prefix = np.vstack((np.zeros(3), np.cumsum(self.values * grid, axis=0)))
+        # Fusion has already capped repeated frames and duplicate seeds. Use
+        # its usable weight on the same support scale as typed endpoints, not
+        # raw frame count. Keep the raw bright integral and run boundaries.
+        supported = bright * np.minimum(1., visible / config.support_weight)
+        self.values = np.column_stack((bright, dark, trust, supported))
+        self.prefix = np.vstack((np.zeros(4), np.cumsum(self.values * grid, axis=0)))
         # Contiguous support may pass through unobservable cells, but observed
         # darkness ends a missing-endpoint hypothesis. No tile edge is consulted.
         strong = bright > .5
@@ -151,7 +157,9 @@ class BodyEvidence:
 
     def summary(self, start, end):
         length = max(0., end - start)
-        bright, dark, covered = self.integral(end) - self.integral(start)
+        bright, dark, covered, supported = self.integral(end) - self.integral(start)
+        bright = max(0., float(bright))
+        supported = float(np.clip(supported, 0., bright))
         unavailable = max(0., length - covered)
         left = int(np.searchsorted(self.q, start - self.grid, side='right'))
         right = int(np.searchsorted(self.q, end, side='left'))
@@ -160,15 +168,17 @@ class BodyEvidence:
         last = int(self.frame_max[left:right].max()) if right > left else None
         uncertain = (first is not None and bool(np.any(
             (self.ambiguous_frames >= first) & (self.ambiguous_frames <= last))))
-        support = max(0., float(bright)) / max(length, self.grid, self.config.body_support_px)
-        return {'range_px': [float(start), float(end)], 'bright_px': max(0., float(bright)),
+        scale = max(length, self.grid, self.config.body_support_px)
+        support, supported_fraction = bright / scale, supported / scale
+        return {'range_px': [float(start), float(end)], 'bright_px': bright,
+                'supported_bright_px': supported, 'supported_fraction': supported_fraction,
                 'absent_px': max(0., float(dark)), 'unavailable_px': unavailable,
-                'support_fraction': support,
+                'support_fraction': support, 'support_scale_px': scale,
                 'fusion_error_px': float(self.errors[left:right].max()) if right > left else None,
                 'frame_bounds': [first, last], 'motion_ambiguous': uncertain,
                 'cost': float(self.config.absence_cost_per_px * max(0., dark)
                               + self.config.unavailable_cost_per_px * unavailable
-                              - self.config.body_reward * support),
+                              - self.config.body_reward * supported_fraction),
                 'evidence_ref': {'kind': 'body', 'bin_start': int(np.floor(start / self.grid)),
                                  'bin_end_exclusive': int(np.ceil(end / self.grid))}}
 
@@ -336,6 +346,7 @@ def interval_cost(endpoints, missing, body, config):
             'additional_endpoint': config.additional_endpoint_cost * max(0, len(endpoints) - 1),
             'missing_endpoint': config.missing_endpoint_cost * missing,
             'body_support': -reward * body['support_fraction'] if body else 0.,
+            'body_support_shortfall': reward * (body['support_fraction'] - body['supported_fraction']) if body else 0.,
             'body_absence': config.absence_cost_per_px * body['absent_px'] if body else 0.,
             'body_unavailable': config.unavailable_cost_per_px * body['unavailable_px'] if body else 0.}
 
@@ -472,6 +483,8 @@ def review_events(lane, candidates, endpoints, config, best):
             causes.update(c[f'missing_{name}_reason'] for c in group if c[f'missing_{name}_reason'])
         if any(c['body'] and c['body']['bright_px'] < config.body_support_px for c in group):
             causes.add('limited_body_support')
+        if any(c['body'] and c['body']['bright_px'] - c['body']['supported_bright_px'] > 1e-9 for c in group):
+            causes.add('limited_body_observation_support')
         if any(c['start'] is None and c['end'] is None for c in group):
             causes.add('body_only_hypothesis')
         if not selected or any(c['exclusion_cost'] - best <= config.ambiguity_cost + 1e-10 for c in selected):
@@ -570,6 +583,7 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
                               'fusion_cache_id': fusion.id, 'lane_count': meta['lane_count'],
                               'event_status_counts': counts, 'candidate_count': candidate_count,
                               'endpoint_count': endpoint_count,
+                              'grid_px': meta['grid_px'],
                               'coordinate': 'relative scroll pixels; never milliseconds or beats',
                               'cost_semantics': 'heuristic additive costs, not probabilities',
                               'motion_policy': 'representative fusion trajectory; original alternatives in motion parent',
@@ -595,7 +609,7 @@ def lanes(cache):
         del data
 
 
-def _validate_lane(lane, data, config):
+def _validate_lane(lane, data, config, grid):
     """Keep all candidate indexes and validation state inside this lane's scope."""
     counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
     if data['format'] != 'ez2rc.decode-lane' or data['schema_version'] != 1 or data['lane'] != lane:
@@ -649,6 +663,10 @@ def _validate_lane(lane, data, config):
             raise CacheError('tap with end')
         if c['start_px'] is not None and c['end_px'] is not None and c['end_px'] <= c['start_px']:
             raise CacheError('reversed longnote')
+        if (c['body'] is None) != (c['type'] == 'tap'):
+            raise CacheError('invalid interval body evidence')
+        if c['body'] is not None:
+            _validate_body(c['body'], config, grid)
         terms = interval_cost([eps[e] for e in (c['start'], c['end']) if e],
                               c['missing_endpoints'], c['body'], config)
         if c['cost_terms'] != terms or c['cost'] != math.fsum(terms.values()):
@@ -679,6 +697,26 @@ def _validate_lane(lane, data, config):
     return counts, len(cs), len(eps)
 
 
+def _validate_body(body, config, grid):
+    """Check derived support separately from darkness and unavailable coverage."""
+    start, end = body['range_px']
+    length = end - start
+    bright, supported = body['bright_px'], body['supported_bright_px']
+    dark, unavailable, scale = body['absent_px'], body['unavailable_px'], body['support_scale_px']
+    values = (start, end, bright, supported, dark, unavailable, scale,
+              body['support_fraction'], body['supported_fraction'], body['cost'])
+    if (not all(math.isfinite(v) for v in values) or length < 0
+            or min(bright, supported, dark, unavailable) < 0 or supported > bright
+            or bright + dark + unavailable > length + 1e-8
+            or scale != max(length, grid, config.body_support_px)
+            or body['support_fraction'] != bright / scale
+            or body['supported_fraction'] != supported / scale
+            or body['cost'] != float(config.absence_cost_per_px * dark
+                                    + config.unavailable_cost_per_px * unavailable
+                                    - config.body_reward * body['supported_fraction'])):
+        raise CacheError('invalid body observation support')
+
+
 def open_decode(path, expected_key=None):
     try:
         counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
@@ -690,7 +728,10 @@ def open_decode(path, expected_key=None):
             if (key['stage'] != 'decode' or key['algorithm_version'] != VERSION
                     or key['parents'] != [meta[f'{s}_cache_id'] for s in ('observation', 'motion', 'fusion')]):
                 raise CacheError('unsupported decode cache/lineage')
-            statuses, candidates, endpoints = _validate_lane(lane, _lane_payload(chunk), DecodeConfig(**key['parameters']))
+            grid = meta['grid_px']
+            if not math.isfinite(grid) or grid <= 0:
+                raise CacheError('invalid decode grid')
+            statuses, candidates, endpoints = _validate_lane(lane, _lane_payload(chunk), DecodeConfig(**key['parameters']), grid)
             for status, count in statuses.items():
                 counts[status] += count
             candidate_count += candidates; endpoint_count += endpoints; lane_count += 1

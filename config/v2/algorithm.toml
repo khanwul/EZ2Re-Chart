@@ -36,6 +36,7 @@ inferred_motion_weight = 0.25
 endpoint_radius_px = 2.0
 # Reliable peaks anchor association; weaker rows are still retained.
 association_similarity = 0.70
+# Usable fusion weight needed for full endpoint and body support.
 support_weight = 1.0
 note_cost = 0.8
 endpoint_reward = 2.0

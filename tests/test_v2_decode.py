@@ -215,6 +215,123 @@ class IntervalDPTest(unittest.TestCase):
         self.assertAlmostEqual(c['cost_terms']['body_support'], -1 / 24)
         self.assertTrue(all(c['cost'] == math.fsum(c['cost_terms'].values()) for c in data['candidates']))
 
+    def test_boundary_tap_brightness_cannot_outvote_its_sparse_endpoint(self):
+        # A 22-row sprite is bright throughout but has only boundary-frame
+        # support. With the old mean-only reward its body-only cost was -.35,
+        # better than the one-frame tap's -.19. No shape or length gate is used.
+        for bounds in ((20, 200), (0, 42)):
+            for weight in (.5, .75, .85):
+                with self.subTest(bounds=bounds, weight=weight):
+                    data = scene([(41, [.99, .41, .74])], [(20, 42)],
+                                 bounds=bounds, errors=(0.,), body_weight=weight)
+                    self.assertEqual(selected(data), [('tap', 41., None)])
+                    body = next(c for c in data['candidates'] if c['start'] is None and c['end'] is None)
+                    self.assertAlmostEqual(body['body']['support_fraction'], 22 / 24)
+                    self.assertAlmostEqual(body['body']['supported_bright_px'], 22 * weight)
+                    self.assertAlmostEqual(body['cost'] - body['cost_terms']['body_support_shortfall'], -.35)
+                    self.assertGreater(body['cost_terms']['body_support_shortfall'], 0)
+                    self.assertEqual(body['body']['absent_px'], 0)
+                    self.assertEqual(body['body']['unavailable_px'], 0)
+                    # Scarce support is still ambiguous, not a fabricated
+                    # resolved tap or a deleted body-only hypothesis.
+                    self.assertEqual(data['events'][0]['status'], 'ambiguous')
+                    self.assertEqual(len(data['endpoints']), 3)
+
+    def test_body_support_does_not_replace_endpoint_or_boundary_evidence(self):
+        short = scene([(50, 1), (51, 2)], [(50, 51)], body_weight=.5)
+        self.assertEqual(selected(short), [('longnote', 50., 51.)])
+        # The same 22-pixel brightness with actual head/tail evidence remains
+        # a longnote. Missing endpoints at an analysis boundary remain null.
+        complete = scene([(20, 1), (42, 2)], [(20, 42)], body_weight=.5)
+        self.assertEqual(selected(complete), [('longnote', 20., 42.)])
+        for points, bodies, expected in (
+                ([(80, 2)], [(0, 80)], ('longnote', None, 80.)),
+                ([(120, 1)], [(120, 200)], ('longnote', 120., None))):
+            data = scene(points, bodies, body_weight=.5)
+            self.assertEqual(selected(data), [expected])
+            self.assertEqual(data['events'][0]['status'], 'incomplete')
+            self.assertIn('coverage_boundary', data['events'][0]['review_causes'])
+            self.assertIn('limited_body_observation_support', data['events'][0]['review_causes'])
+        # Brightness alone still cannot classify a well-supported sprite.
+        self.assertEqual(selected(scene([], [(20, 42)])), [('longnote', None, None)])
+
+    def test_body_support_weight_saturates_without_relabeling_darkness(self):
+        summaries = []
+        for weight in (.1, .5, 1., 3.):
+            data = scene([(20, 1), (120, 2)], [(20, 120)], body_weight=weight,
+                         absent=[(40, 50)], unavailable=[(60, 70)], occluded=[(80, 90)])
+            c = next(c for c in data['candidates'] if c['start_px'] == 20 and c['end_px'] == 120)
+            body = c['body']; summaries.append(body)
+            self.assertEqual(body['bright_px'], 70)
+            self.assertEqual(body['absent_px'], 10)
+            self.assertEqual(body['unavailable_px'], 20)
+            self.assertAlmostEqual(body['supported_bright_px'], 70 * min(1, weight))
+        self.assertEqual(summaries[-1], summaries[-2])
+        zero = scene([], [(20, 42)], body_weight=0)
+        self.assertEqual(selected(zero), [])
+
+    def test_body_support_uses_capped_fusion_groups_not_repeated_frames(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bodies = []
+            for scroll, duplicate in (([0, 8, 16], False), ([0, 8, 8, 8, 16], True)):
+                obs = observations(root, scroll, duplicate_seeds=duplicate)
+                m, _ = estimate(obs, MotionConfig(), root)
+                f, _ = accumulate(obs, m, FusionConfig(repeat_group_cap=.2), root)
+                _, _, _, cells = decode._lane_input(obs, f, 2)
+                body = decode.BodyEvidence(cells, 1., DecodeConfig())
+                bodies.append(body.summary(100, 140))
+            for field in ('bright_px', 'supported_bright_px', 'supported_fraction', 'cost'):
+                self.assertAlmostEqual(bodies[0][field], bodies[1][field])
+            self.assertLess(bodies[0]['supported_fraction'], bodies[0]['support_fraction'])
+
+    def test_fractional_body_support_integrates_weights_and_sparse_coverage(self):
+        cells = {'index': np.array([[0, 0], [0, 1], [0, 3]]),
+                 'weight_sum': np.zeros((3, 4)), 'score_sum': np.zeros((3, 4)),
+                 'visibility_weight': np.zeros((3, 4, 5))}
+        cells['weight_sum'][:, 3] = [.25, 2., .5]
+        cells['score_sum'][:, 3] = [.15, 1.2, 0.]
+        cells['visibility_weight'][:, 3, 1] = cells['weight_sum'][:, 3]
+        for weight, supported in ((1., 2.8125), (2., 2.65625)):
+            config = DecodeConfig(support_weight=weight)
+            body = decode.BodyEvidence(cells, 2.5, config).summary(1.25, 8.75)
+            # 1.25 bright pixels at weight .25, 2.5 at weight 2,
+            # a 2.5-pixel hole, then 1.25 observed dark pixels.
+            self.assertEqual(body['bright_px'], 3.75)
+            self.assertEqual(body['supported_bright_px'], supported)
+            self.assertEqual(body['absent_px'], 1.25)
+            self.assertEqual(body['unavailable_px'], 2.5)
+            self.assertEqual(body['supported_fraction'], supported / 24)
+            decode._validate_body(body, config, 2.5)
+        wide = decode.BodyEvidence(cells, 30., DecodeConfig()).summary(1., 2.)
+        self.assertEqual(wide['support_scale_px'], 30.)
+        decode._validate_body(wide, DecodeConfig(), 30.)
+
+    def test_rechecksummed_body_support_corruption_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); obs = observations(root, [0, 8, 16, 24])
+            m, _ = estimate(obs, MotionConfig(), root)
+            f, _ = accumulate(obs, m, FusionConfig(), root)
+            d, _ = infer(obs, m, f, DecodeConfig(), root)
+            for field in ('supported_bright_px', 'supported_fraction', 'support_fraction',
+                          'support_scale_px', 'cost'):
+                with self.subTest(field=field):
+                    data = next(lanes(d))
+                    body = next(c['body'] for c in data['candidates'] if c['body'] and c['body']['bright_px'] > 0)
+                    body[field] += .125
+                    chunk = d.path / 'chunk-000000.npz'
+                    np.savez_compressed(chunk, payload=np.frombuffer(canonical(data), dtype=np.uint8))
+                    manifest = d.manifest
+                    manifest['chunks'][0]['sha256'] = file_hash(chunk)
+                    with np.load(chunk) as arrays:
+                        manifest['chunks'][0]['arrays']['payload']['shape'] = list(arrays['payload'].shape)
+                    manifest['manifest_sha256'] = digest({k:v for k,v in manifest.items() if k != 'manifest_sha256'})
+                    write_json(d.path / 'manifest.json', manifest)
+                    with self.assertRaisesRegex(CacheError, 'body observation support'):
+                        open_decode(d.path)
+                    d, hit = infer(obs, m, f, DecodeConfig(), root)
+                    self.assertFalse(hit)
+
     def test_review_causes_distinguish_hypotheses_and_timing(self):
         data = scene([(20, [.99, .99, .1]), (80, 2)], [(20, 80)], ambiguous_motion=True)
         self.assertTrue(all('motion_alternatives' in e['review_causes'] for e in data['events']))
