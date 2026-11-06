@@ -73,7 +73,13 @@ def stage_key(stage: str, version: str, parameters: dict, parents: tuple[str, ..
 
 
 class Cache:
-    def __init__(self, path: Path, expected_key: dict | None = None):
+    def __init__(self, path: Path, expected_key: dict | None = None, *, validate_chunk=None):
+        """Check integrity and optionally semantics in the same chunk read.
+
+        The callback receives (manifest, chunk index, arrays) after checksum and
+        array checks. It must raise on invalid content and not retain arrays.
+        Later reads still recheck checksums; this is not a trusted-read bypass.
+        """
         self.path = Path(path)
         try:
             self.manifest = read_json(self.path / "manifest.json", "ez2rc.stage-cache")
@@ -94,7 +100,10 @@ class Cache:
                 source = self.path / chunk["file"]
                 if source.is_symlink() or file_hash(source) != chunk["sha256"]:
                     raise CacheError("cache chunk checksum mismatch")
-                self._read_chunk(chunk)
+                arrays = self._read_chunk(chunk)
+                if validate_chunk is not None:
+                    validate_chunk(self.manifest, i, arrays)
+                del arrays
         except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile) as exc:
             raise CacheError(f"invalid cache {self.path}: {exc}") from exc
 
@@ -145,6 +154,15 @@ class CacheWriter(AbstractContextManager):
                                        for n, a in arrays.items()}})
 
     def commit(self, metadata: dict, *, validate=None) -> Cache:
+        # Stage validators return a fully checked Cache. Do not decompress all
+        # chunks again before/after that validation. Renaming the directory
+        # preserves the validated contents; subsequent reads still hash files.
+        def checked(path):
+            cache = Cache(path, self.key) if validate is None else validate(path)
+            if cache.manifest['key'] != self.key:
+                raise CacheError('cache identity mismatch during publication')
+            return cache
+
         manifest = {
             "format": "ez2rc.stage-cache", "schema_version": SCHEMA_VERSION,
             "status": "complete", "cache_id": self.id, "key": self.key,
@@ -152,15 +170,11 @@ class CacheWriter(AbstractContextManager):
         }
         manifest["manifest_sha256"] = digest(manifest)
         write_json(self.temp / "manifest.json", manifest)
-        Cache(self.temp, self.key)
-        if validate is not None:
-            validate(self.temp)
+        cache = checked(self.temp)
         if self.final.exists():
             # A valid concurrent publisher wins. Corrupt caches stay reviewable.
             try:
-                existing = Cache(self.final, self.key)
-                if validate is not None:
-                    validate(self.final)
+                existing = checked(self.final)
             except CacheError:
                 quarantine = self.final.with_name(f".{self.id}.corrupt-{self.temp.name.rsplit('.', 1)[-1]}")
                 self.final.rename(quarantine)
@@ -172,12 +186,10 @@ class CacheWriter(AbstractContextManager):
         except OSError as exc:
             if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
                 raise
-            existing = Cache(self.final, self.key)
-            if validate is not None:
-                validate(self.final)
-            return existing
+            return checked(self.final)
         self.published = True
-        return Cache(self.final, self.key)
+        cache.path = self.final
+        return cache
 
     def __exit__(self, *args):
         if self.temp.exists():

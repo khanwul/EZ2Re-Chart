@@ -7,6 +7,7 @@ without a beam or a duration cutoff. Storage tiles are only ingestion batches.
 """
 from __future__ import annotations
 
+import codecs
 from dataclasses import asdict
 import heapq
 import json
@@ -28,13 +29,14 @@ def cache_key(observations, motion, fusion, config):
     return stage_key("decode", VERSION, asdict(config), (observations.id, motion.id, fusion.id))
 
 
-def ordered_dp(size, candidates, margin):
+def ordered_dp(size, candidates, margin, *, verify=False):
     """Exact shortest paths in a DAG with zero-cost noise edges.
 
     Candidate [lo, hi] consumes inclusive resource tokens. Adjacent, disjoint
     resources may touch at the same q. Marginals are whole-lane costs, not
     probabilities. Replacement costs use edges crossing the selected edge's
     first cut, so they also include the all-noise alternative.
+    Verification compares derived fields without changing or copying candidates.
     """
     outgoing = [[] for _ in range(size)]
     for i, c in enumerate(candidates):
@@ -66,12 +68,19 @@ def ordered_dp(size, candidates, margin):
     for u in range(size):
         for i in outgoing[u]:
             c = candidates[i]
-            c['path_cost'] = float(forward[u] + c['cost'] + backward[c['hi'] + 1])
-            c['excess_cost'] = max(0., c['path_cost'] - best)
-            c['selected'] = i in selected
-            c['competitive'] = c['excess_cost'] <= margin + 1e-10
-            c['exclusion_cost'] = None
-            heapq.heappush(heap, (c['path_cost'], i, c['hi']))
+            path_cost = float(forward[u] + c['cost'] + backward[c['hi'] + 1])
+            excess_cost = max(0., path_cost - best)
+            chosen = i in selected
+            competitive = excess_cost <= margin + 1e-10
+            if verify:
+                if (c['path_cost'] != path_cost or c['excess_cost'] != excess_cost
+                        or c['selected'] != chosen or c['competitive'] != competitive
+                        or not chosen and c['exclusion_cost'] is not None):
+                    raise ValueError('invalid path or alternative cost')
+            else:
+                c.update(path_cost=path_cost, excess_cost=excess_cost, selected=chosen,
+                         competitive=competitive, exclusion_cost=None)
+            heapq.heappush(heap, (path_cost, i, c['hi']))
         for i in outgoing[u]:
             if i not in selected:
                 continue
@@ -83,7 +92,11 @@ def ordered_dp(size, candidates, margin):
             alternative = float(forward[u] + backward[u + 1])
             if heap:
                 alternative = min(alternative, heap[0][0])
-            candidates[i]['exclusion_cost'] = alternative
+            if verify:
+                if candidates[i]['exclusion_cost'] != alternative:
+                    raise ValueError('invalid path or alternative cost')
+            else:
+                candidates[i]['exclusion_cost'] = alternative
             for entry in held:
                 heapq.heappush(heap, entry)
     return best
@@ -523,6 +536,12 @@ def _lane_input(observations, fusion, lane):
     return ledger, obs['scores'], obs['flags'], {k: v[order] for k, v in cells.items()}
 
 
+def _infer_lane(observations, fusion, lane, clock, meta, config):
+    ledger, scores, flags, cells = _lane_input(observations, fusion, lane)
+    sites, endpoints = endpoint_sites(lane, ledger, scores, flags, clock, meta, config)
+    return summarize_lane(lane, sites, endpoints, BodyEvidence(cells, meta['grid_px'], config, clock), config)
+
+
 def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfig, root: Path):
     if (motion.manifest['key']['parents'] != [observations.id]
             or fusion.manifest['key']['parents'] != [observations.id, motion.id]):
@@ -539,13 +558,14 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
     candidate_count = endpoint_count = 0
     with CacheWriter(root, key) as writer:
         for lane in range(meta['lane_count']):
-            ledger, scores, flags, cells = _lane_input(observations, fusion, lane)
-            sites, endpoints = endpoint_sites(lane, ledger, scores, flags, clock, meta, config)
-            result = summarize_lane(lane, sites, endpoints, BodyEvidence(cells, meta['grid_px'], config, clock), config)
+            result = _infer_lane(observations, fusion, lane, clock, meta, config)
             for e in result['events']:
                 counts[e['status']] += 1
-            candidate_count += len(result['candidates']); endpoint_count += len(endpoints)
+            candidate_count += len(result['candidates']); endpoint_count += len(result['endpoints'])
             writer.append(payload=np.frombuffer(canonical(result), dtype=np.uint8))
+            # Release this lane before constructing the next or validating the
+            # published payload. No inference boundary is introduced within it.
+            del result
         return writer.commit({'observation_cache_id': observations.id, 'motion_cache_id': motion.id,
                               'fusion_cache_id': fusion.id, 'lane_count': meta['lane_count'],
                               'event_status_counts': counts, 'candidate_count': candidate_count,
@@ -557,111 +577,128 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
                               'timing_status': 'pending'}, validate=open_decode), False
 
 
+def _lane_payload(chunk):
+    data = chunk.get('payload')
+    if data is None or data.dtype != np.uint8 or data.ndim != 1:
+        raise CacheError('invalid decode payload encoding')
+    def reject(value):
+        raise ValueError(f'non-finite decode value: {value}')
+    # Decode the array buffer directly, without a second full bytes payload.
+    return json.loads(codecs.decode(data, 'utf-8'), parse_constant=reject)
+
+
 def lanes(cache):
     for chunk in cache.chunks():
-        data = chunk.get('payload')
-        if data is None or data.dtype != np.uint8 or data.ndim != 1:
-            raise CacheError('invalid decode payload encoding')
-        def reject(value):
-            raise ValueError(f'non-finite decode value: {value}')
-        yield json.loads(data.tobytes(), parse_constant=reject)
+        data = _lane_payload(chunk)
+        del chunk
+        yield data
+        del data
+
+
+def _validate_lane(lane, data, config):
+    """Keep all candidate indexes and validation state inside this lane's scope."""
+    counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
+    if data['format'] != 'ez2rc.decode-lane' or data['schema_version'] != 1 or data['lane'] != lane:
+        raise CacheError('invalid decoded lane')
+    eps = {e['id']: e for e in data['endpoints']}
+    cs = {c['id']: c for c in data['candidates']}
+    sites = {s['id']: s for s in data['sites']}
+    if (len(eps) != len(data['endpoints']) or len(cs) != len(data['candidates'])
+            or len(sites) != len(data['sites'])):
+        raise CacheError('duplicate decode identities')
+    owners = {}
+    memberships = {sid: set() for sid in sites}
+    for e in eps.values():
+        if e['site_id'] not in memberships:
+            raise CacheError('dangling endpoint site')
+        memberships[e['site_id']].add(e['id'])
+    for s in sites.values():
+        if (not s['endpoint_ids'] or len(set(s['endpoint_ids'])) != len(s['endpoint_ids'])
+                or set(s['endpoint_ids']) != memberships[s['id']]
+                or not 0 <= s['anchor_range_px'][1] - s['anchor_range_px'][0] <= 2 * config.endpoint_radius_px):
+            raise CacheError('invalid endpoint site')
+    for e in eps.values():
+        if (e['kind'] not in KINDS or e['site_id'] not in sites
+                or e['id'] not in sites[e['site_id']]['endpoint_ids']
+                or e['observed_range_px'][0] > e['observed_range_px'][1]
+                or not 0 <= e['utility'] <= 1 or e['weight'] < 0
+                or e['shared_motion_error_px'] < 0 or e['fusion_error_px'] < 0
+                or not e['observed_range_px'][0] <= e['observed_q_px'] <= e['observed_range_px'][1]
+                or not set(e['search_boundary_observation_ids']) <= set(e['observation_ids'])):
+            raise CacheError('invalid endpoint hypothesis')
+        for ref in e['observation_ids']:
+            if ref in owners and owners[ref] != e['site_id']:
+                raise CacheError('observation shared between endpoint sites')
+            owners[ref] = e['site_id']
+    used, last = set(), -1
+    for c in sorted(cs.values(), key=lambda c: c['lo']):
+        if (not np.isfinite(c['cost']) or not 0 <= c['lo'] <= c['hi'] < data['token_count']
+                or c['type'] not in ('tap', 'longnote') or c['lane'] != lane):
+            raise CacheError('invalid interval candidate')
+        for name in ('start', 'end'):
+            if c[name] is not None and c[name] not in eps:
+                raise CacheError('dangling endpoint reference')
+            if c[f'{name}_px'] != (eps[c[name]]['q_px'] if c[name] is not None else None):
+                raise CacheError('interval coordinate disagrees with endpoint')
+        endpoint_sites = [eps[e]['site_id'] for e in (c['start'], c['end']) if e]
+        if (c['endpoint_site_ids'] != endpoint_sites or len(set(endpoint_sites)) != len(endpoint_sites)
+                or c['start'] and eps[c['start']]['kind'] != ('tap' if c['type'] == 'tap' else 'head')
+                or c['end'] and eps[c['end']]['kind'] != 'tail'):
+            raise CacheError('invalid endpoint resources or kinds')
+        if c['type'] == 'tap' and (c['end'] is not None or c['end_px'] is not None):
+            raise CacheError('tap with end')
+        if c['start_px'] is not None and c['end_px'] is not None and c['end_px'] <= c['start_px']:
+            raise CacheError('reversed longnote')
+        terms = interval_cost([eps[e] for e in (c['start'], c['end']) if e],
+                              c['missing_endpoints'], c['body'], config)
+        if c['cost_terms'] != terms or c['cost'] != math.fsum(terms.values()):
+            raise CacheError('invalid interval cost terms')
+        if c['selected']:
+            resources = set(c['endpoint_site_ids'])
+            if c['lo'] <= last or resources & used:
+                raise CacheError('conflicting selected intervals')
+            last = c['hi']; used |= resources
+    if ordered_dp(data['token_count'], data['candidates'], config.ambiguity_cost, verify=True) != data['best_cost']:
+        raise CacheError('invalid optimum cost')
+    emitted = []
+    for event in data['events']:
+        counts[event['status']] += 1
+        if (not set(event['candidate_ids']) <= cs.keys()
+                or not set(event['selected_candidate_ids']) <= set(event['candidate_ids'])
+                or any(not cs[c]['competitive'] for c in event['candidate_ids'])
+                or any(not cs[c]['selected'] for c in event['selected_candidate_ids'])):
+            raise CacheError('dangling interval reference')
+        emitted.extend(event['candidate_ids'])
+        if event['status'] == 'resolved' and (len(event['selected_candidate_ids']) != 1 or
+                any(cs[c]['missing_endpoints'] for c in event['selected_candidate_ids'])):
+            raise CacheError('resolved pixel event lacks endpoints')
+    if len(emitted) != len(set(emitted)) or set(emitted) != {c['id'] for c in cs.values() if c['competitive']}:
+        raise CacheError('competitive intervals hidden or duplicated')
+    if data['events'] != review_events(lane, data['candidates'], data['endpoints'], config, data['best_cost']):
+        raise CacheError('invalid pixel review diagnostics')
+    return counts, len(cs), len(eps)
 
 
 def open_decode(path, expected_key=None):
     try:
-        cache = Cache(path, expected_key)
-        key, meta = cache.manifest['key'], cache.manifest['metadata']
-        if (key['stage'] != 'decode' or key['algorithm_version'] != VERSION
-                or key['parents'] != [meta[f'{s}_cache_id'] for s in ('observation', 'motion', 'fusion')]):
-            raise CacheError('unsupported decode cache/lineage')
         counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
-        config = DecodeConfig(**key['parameters'])
-        candidate_count = endpoint_count = 0
-        lane_count = 0
-        for lane, data in enumerate(lanes(cache)):
-            if data['format'] != 'ez2rc.decode-lane' or data['schema_version'] != 1 or data['lane'] != lane:
-                raise CacheError('invalid decoded lane')
-            eps = {e['id']: e for e in data['endpoints']}
-            cs = {c['id']: c for c in data['candidates']}
-            sites = {s['id']: s for s in data['sites']}
-            if (len(eps) != len(data['endpoints']) or len(cs) != len(data['candidates'])
-                    or len(sites) != len(data['sites'])):
-                raise CacheError('duplicate decode identities')
-            owners = {}
-            memberships = {sid: set() for sid in sites}
-            for e in eps.values():
-                if e['site_id'] not in memberships:
-                    raise CacheError('dangling endpoint site')
-                memberships[e['site_id']].add(e['id'])
-            for s in sites.values():
-                if (not s['endpoint_ids'] or len(set(s['endpoint_ids'])) != len(s['endpoint_ids'])
-                        or set(s['endpoint_ids']) != memberships[s['id']]
-                        or not 0 <= s['anchor_range_px'][1] - s['anchor_range_px'][0] <= 2 * config.endpoint_radius_px):
-                    raise CacheError('invalid endpoint site')
-            for e in eps.values():
-                if (e['kind'] not in KINDS or e['site_id'] not in sites
-                        or e['id'] not in sites[e['site_id']]['endpoint_ids']
-                        or e['observed_range_px'][0] > e['observed_range_px'][1]
-                        or not 0 <= e['utility'] <= 1 or e['weight'] < 0
-                        or e['shared_motion_error_px'] < 0 or e['fusion_error_px'] < 0
-                        or not e['observed_range_px'][0] <= e['observed_q_px'] <= e['observed_range_px'][1]
-                        or not set(e['search_boundary_observation_ids']) <= set(e['observation_ids'])):
-                    raise CacheError('invalid endpoint hypothesis')
-                for ref in e['observation_ids']:
-                    if ref in owners and owners[ref] != e['site_id']:
-                        raise CacheError('observation shared between endpoint sites')
-                    owners[ref] = e['site_id']
-            used, last = set(), -1
-            for c in sorted(cs.values(), key=lambda c: c['lo']):
-                if (not np.isfinite(c['cost']) or not 0 <= c['lo'] <= c['hi'] < data['token_count']
-                        or c['type'] not in ('tap', 'longnote') or c['lane'] != lane):
-                    raise CacheError('invalid interval candidate')
-                for name in ('start', 'end'):
-                    if c[name] is not None and c[name] not in eps:
-                        raise CacheError('dangling endpoint reference')
-                    if c[f'{name}_px'] != (eps[c[name]]['q_px'] if c[name] is not None else None):
-                        raise CacheError('interval coordinate disagrees with endpoint')
-                endpoint_sites = [eps[e]['site_id'] for e in (c['start'], c['end']) if e]
-                if (c['endpoint_site_ids'] != endpoint_sites or len(set(endpoint_sites)) != len(endpoint_sites)
-                        or c['start'] and eps[c['start']]['kind'] != ('tap' if c['type'] == 'tap' else 'head')
-                        or c['end'] and eps[c['end']]['kind'] != 'tail'):
-                    raise CacheError('invalid endpoint resources or kinds')
-                if c['type'] == 'tap' and (c['end'] is not None or c['end_px'] is not None):
-                    raise CacheError('tap with end')
-                if c['start_px'] is not None and c['end_px'] is not None and c['end_px'] <= c['start_px']:
-                    raise CacheError('reversed longnote')
-                terms = interval_cost([eps[e] for e in (c['start'], c['end']) if e],
-                                      c['missing_endpoints'], c['body'], config)
-                if c['cost_terms'] != terms or c['cost'] != math.fsum(terms.values()):
-                    raise CacheError('invalid interval cost terms')
-                if c['selected']:
-                    resources = set(c['endpoint_site_ids'])
-                    if c['lo'] <= last or resources & used:
-                        raise CacheError('conflicting selected intervals')
-                    last = c['hi']; used |= resources
-            checked = [dict(c) for c in data['candidates']]
-            if ordered_dp(data['token_count'], checked, key['parameters']['ambiguity_cost']) != data['best_cost']:
-                raise CacheError('invalid optimum cost')
-            for actual, expected in zip(data['candidates'], checked):
-                if any(actual[k] != expected[k] for k in ('path_cost', 'excess_cost', 'selected', 'competitive', 'exclusion_cost')):
-                    raise CacheError('invalid path or alternative cost')
-            emitted = []
-            for event in data['events']:
-                counts[event['status']] += 1
-                if (not set(event['candidate_ids']) <= cs.keys()
-                        or not set(event['selected_candidate_ids']) <= set(event['candidate_ids'])
-                        or any(not cs[c]['competitive'] for c in event['candidate_ids'])
-                        or any(not cs[c]['selected'] for c in event['selected_candidate_ids'])):
-                    raise CacheError('dangling interval reference')
-                emitted.extend(event['candidate_ids'])
-                if event['status'] == 'resolved' and (len(event['selected_candidate_ids']) != 1 or
-                        any(cs[c]['missing_endpoints'] for c in event['selected_candidate_ids'])):
-                    raise CacheError('resolved pixel event lacks endpoints')
-            if len(emitted) != len(set(emitted)) or set(emitted) != {c['id'] for c in cs.values() if c['competitive']}:
-                raise CacheError('competitive intervals hidden or duplicated')
-            if data['events'] != review_events(lane, data['candidates'], data['endpoints'], config, data['best_cost']):
-                raise CacheError('invalid pixel review diagnostics')
-            candidate_count += len(cs); endpoint_count += len(eps); lane_count += 1
+        candidate_count = endpoint_count = lane_count = 0
+
+        def check_chunk(manifest, lane, chunk):
+            nonlocal candidate_count, endpoint_count, lane_count
+            key, meta = manifest['key'], manifest['metadata']
+            if (key['stage'] != 'decode' or key['algorithm_version'] != VERSION
+                    or key['parents'] != [meta[f'{s}_cache_id'] for s in ('observation', 'motion', 'fusion')]):
+                raise CacheError('unsupported decode cache/lineage')
+            statuses, candidates, endpoints = _validate_lane(lane, _lane_payload(chunk), DecodeConfig(**key['parameters']))
+            for status, count in statuses.items():
+                counts[status] += count
+            candidate_count += candidates; endpoint_count += endpoints; lane_count += 1
+
+        # Integrity, shape and lane semantics share one decompression. The
+        # callback's parsed lane and indexes die before the next payload read.
+        cache = Cache(path, expected_key, validate_chunk=check_chunk)
+        meta = cache.manifest['metadata']
         if (lane_count != meta['lane_count'] or counts != meta['event_status_counts']
                 or candidate_count != meta['candidate_count'] or endpoint_count != meta['endpoint_count']):
             raise CacheError('decode count mismatch')
@@ -670,22 +707,30 @@ def open_decode(path, expected_key=None):
         raise CacheError(f'invalid decode: {exc}') from exc
 
 
+def _lane_output_events(data):
+    events, pixels = [], []
+    cs = {c['id']: c for c in data['candidates']}
+    eps = {e['id']: e for e in data['endpoints']}
+    for p in data['events']:
+        selected = [cs[c] for c in p['selected_candidate_ids']]
+        endpoint_ids = {e for c in p['candidate_ids'] for e in (cs[c]['start'], cs[c]['end']) if e}
+        observations = sorted({o for e in endpoint_ids for o in eps[e]['observation_ids']})
+        reason = p['reason'] + '; video timing, independent calibration and musical origin pending'
+        events.append(Event(p['id'], p['lane'], 'ambiguous' if p['status'] == 'ambiguous' else 'incomplete',
+                            selected[0]['type'] if len(selected) == 1 else None,
+                            observation_ids=tuple(observations), candidate_ids=tuple(p['candidate_ids']),
+                            selected_cost=p['selected_cost'], alternative_cost=p['alternative_cost'], reason=reason))
+        pixels.append({**p, 'selected_intervals': selected,
+                       'alternatives': [cs[c] for c in p['candidate_ids'] if not cs[c]['selected']],
+                       'endpoints': [eps[e] for e in sorted(endpoint_ids)]})
+    return events, pixels
+
+
 def output_events(cache):
     """Bridge pixel results to the existing, deliberately unresolved time API."""
     events, pixels = [], []
     for data in lanes(cache):
-        cs = {c['id']: c for c in data['candidates']}
-        eps = {e['id']: e for e in data['endpoints']}
-        for p in data['events']:
-            selected = [cs[c] for c in p['selected_candidate_ids']]
-            endpoint_ids = {e for c in p['candidate_ids'] for e in (cs[c]['start'], cs[c]['end']) if e}
-            observations = sorted({o for e in endpoint_ids for o in eps[e]['observation_ids']})
-            reason = p['reason'] + '; video timing, independent calibration and musical origin pending'
-            events.append(Event(p['id'], p['lane'], 'ambiguous' if p['status'] == 'ambiguous' else 'incomplete',
-                                selected[0]['type'] if len(selected) == 1 else None,
-                                observation_ids=tuple(observations), candidate_ids=tuple(p['candidate_ids']),
-                                selected_cost=p['selected_cost'], alternative_cost=p['alternative_cost'], reason=reason))
-            pixels.append({**p, 'selected_intervals': selected,
-                           'alternatives': [cs[c] for c in p['candidate_ids'] if not cs[c]['selected']],
-                           'endpoints': [eps[e] for e in sorted(endpoint_ids)]})
+        lane_events, lane_pixels = _lane_output_events(data)
+        events.extend(lane_events); pixels.extend(lane_pixels)
+        del data
     return tuple(events), pixels

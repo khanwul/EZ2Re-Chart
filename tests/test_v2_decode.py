@@ -4,17 +4,20 @@ import json
 import math
 from pathlib import Path
 import tempfile
+from types import MappingProxyType
 import unittest
 from unittest.mock import patch
+import weakref
 
 import numpy as np
 
 from ez2rc.v2.config import AlgorithmConfig, DecodeConfig, FusionConfig, MotionConfig, ConfigError, load_algorithm
+from ez2rc.v2 import decode
 from ez2rc.v2.decode import infer, lanes, ordered_dp, open_decode, output_events
 from ez2rc.v2.fusion import accumulate
 from ez2rc.v2.motion import estimate
 from ez2rc.v2.runner import execute
-from ez2rc.v2.storage import CacheError, canonical, digest, file_hash, write_json
+from ez2rc.v2.storage import Cache, CacheError, canonical, digest, file_hash, write_json
 from v2_decode_fixtures import associate, scene, selected
 from v2_motion_fixtures import observations
 from v2_fixtures import fixture
@@ -34,11 +37,101 @@ class IntervalDPTest(unittest.TestCase):
                     continue
                 paths.append((sum(cs[i]['cost'] for i in chosen), chosen))
             best = ordered_dp(8, cs, .35)
+            self.assertEqual(ordered_dp(8, [MappingProxyType(c) for c in cs], .35, verify=True), best)
             self.assertAlmostEqual(best, min(p[0] for p in paths))
             for i, c in enumerate(cs):
                 self.assertAlmostEqual(c['path_cost'], min(cost for cost, p in paths if i in p))
                 if c['selected']:
                     self.assertAlmostEqual(c['exclusion_cost'], min(cost for cost, p in paths if i not in p))
+
+    def test_dp_verification_rejects_each_derived_field_without_mutation(self):
+        cs = [{'lo': 0, 'hi': 1, 'cost': -2.}, {'lo': 0, 'hi': 1, 'cost': -1.8},
+              {'lo': 2, 'hi': 3, 'cost': 1.}]
+        best = ordered_dp(4, cs, .35)
+        self.assertEqual(ordered_dp(4, [MappingProxyType(c) for c in cs], .35, verify=True), best)
+        for i in range(len(cs)):
+            for field in ('path_cost', 'excess_cost', 'selected', 'competitive', 'exclusion_cost'):
+                with self.subTest(candidate=i, field=field):
+                    corrupted = [dict(c) for c in cs]
+                    value = corrupted[i][field]
+                    corrupted[i][field] = not value if isinstance(value, bool) else 999.
+                    before = canonical(corrupted)
+                    with self.assertRaisesRegex(ValueError, 'path or alternative cost'):
+                        ordered_dp(4, [MappingProxyType(c) for c in corrupted], .35, verify=True)
+                    self.assertEqual(canonical(corrupted), before)
+
+    def test_decode_validation_reads_once_and_releases_each_lane(self):
+        class Lane(dict):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); obs = observations(root, [0, 8, 16, 24])
+            m, _ = estimate(obs, MotionConfig(), root)
+            f, _ = accumulate(obs, m, FusionConfig(), root)
+            d, _ = infer(obs, m, f, DecodeConfig(), root)
+            refs, reads = [], []
+            original_read, original_payload = Cache._read_chunk, decode._lane_payload
+
+            def read(cache, chunk):
+                self.assertTrue(all(ref() is None for ref in refs))
+                arrays = original_read(cache, chunk)
+                refs.append(weakref.ref(arrays['payload']))
+                reads.append(chunk['file'])
+                return arrays
+
+            def payload(chunk):
+                data = Lane(original_payload(chunk))
+                refs.append(weakref.ref(data))
+                return data
+
+            with patch.object(Cache, '_read_chunk', read), patch.object(decode, '_lane_payload', payload):
+                checked = open_decode(d.path)
+            self.assertEqual(checked.manifest, d.manifest)
+            self.assertEqual(reads, [c['file'] for c in d.manifest['chunks']])
+            self.assertTrue(all(ref() is None for ref in refs))
+            # Single-pass validation still rejects changes on subsequent reads.
+            (d.path / 'chunk-000001.npz').write_bytes(b'changed after validation')
+            with self.assertRaises(CacheError):
+                list(lanes(checked))
+
+    def test_inference_and_export_release_previous_lane_objects(self):
+        class Lane(dict):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); obs = observations(root, [0, 8, 16, 24])
+            m, _ = estimate(obs, MotionConfig(), root)
+            f, _ = accumulate(obs, m, FusionConfig(), root)
+            refs = []
+            original_infer, original_payload = decode._infer_lane, decode._lane_payload
+
+            def watch(data):
+                result = Lane(data)
+                refs.append(weakref.ref(result))
+                # Export deliberately retains competitive candidates. Watch a
+                # discarded candidate too: a stale ID index can keep it alive
+                # even after the enclosing lane dictionary has been released.
+                for i, c in enumerate(result['candidates']):
+                    if not c['competitive']:
+                        candidate = Lane(c)
+                        result['candidates'][i] = candidate
+                        refs.append(weakref.ref(candidate))
+                        break
+                return result
+
+            def infer_lane(*args):
+                self.assertTrue(all(ref() is None for ref in refs))
+                return watch(original_infer(*args))
+
+            def payload(chunk):
+                self.assertTrue(all(ref() is None for ref in refs))
+                return watch(original_payload(chunk))
+
+            with patch.object(decode, '_infer_lane', infer_lane), patch.object(decode, '_lane_payload', payload):
+                d, _ = infer(obs, m, f, DecodeConfig(), root)
+                exported = output_events(d)
+            self.assertTrue(all(ref() is None for ref in refs))
+            self.assertEqual(exported, output_events(d))
 
     def test_near_taps_and_short_longnote_keep_their_types(self):
         data = scene([(20, 0), (26, 0), (40, 1), (46, 2)], [(40, 46)])
