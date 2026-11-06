@@ -4,7 +4,7 @@
 # It points, by name, at:
 #   - a skin profile   -> skins/<skin>/skin.toml
 #   - a geometry profile -> profiles/<display_resolution>/<key_mode>.toml
-# The resolver (calibration.py) merges all three into a single Calibration
+# The resolver (config.py) merges all three into a single RunConfig
 # object that Layer 2+ consume. To analyze a different video/skin/mode, only
 # this file changes.
 # =============================================================================
