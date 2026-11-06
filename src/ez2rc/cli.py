@@ -1,4 +1,4 @@
-"""EZ2CV command-line entry point."""
+"""EZ2Re:Chart command-line entry point."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import sys
 import time
 from pathlib import Path
 
-from ez2cv.chart import build_chart
-from ez2cv.config import ConfigError, load_config
-from ez2cv.detection import DetectionPipeline
-from ez2cv.io import output_dir, read_raw, write_chart, write_raw
+from ez2rc.chart import build_chart
+from ez2rc.config import ConfigError, load_config
+from ez2rc.detection import DetectionPipeline
+from ez2rc.io import output_dir, read_raw, write_chart, write_raw
 
 
 TEMPLATE_INPUT = "config/song.toml"
@@ -37,7 +37,7 @@ def _parse_range(spec: str, *, max_end: int) -> tuple[int, int]:
 
 
 def _render_chart(chart_path: Path) -> Path:
-    from ez2cv.visualize import render
+    from ez2rc.visualize import render
 
     song = chart_path.stem.removesuffix("_chart")
     image_path = chart_path.with_name(f"{song}_chart_visual.png")
@@ -74,7 +74,7 @@ def run(config_path: str | Path, *,
     print(f"  wrote {chart_path}")
 
     if debug_png:
-        from ez2cv.detection.debug_viz import plot_beat_signal, plot_raw_chart
+        from ez2rc.detection.debug_viz import plot_beat_signal, plot_raw_chart
 
         raw_png = out_root / f"{song}_raw_chart.png"
         beat_png = out_root / f"{song}_beat_signal.png"
@@ -85,7 +85,7 @@ def run(config_path: str | Path, *,
         print(f"  wrote {beat_png}")
 
     if debug_video is not None:
-        from ez2cv.detection.debug_viz import render_overlay_video
+        from ez2rc.detection.debug_viz import render_overlay_video
 
         start, end = _parse_range(debug_video, max_end=raw.frame_count)
         video_out = out_root / f"{song}_debug_overlay_{start}_{end}.mp4"
@@ -114,17 +114,17 @@ def run_from_raw(raw_path: str | Path, *, chart_image: bool = True) -> Path:
 _EPILOG = """\
 examples
 --------
-  ez2cv
-  ez2cv config/GEHENNA.toml
-  ez2cv config/GEHENNA.toml --debug-video 500:2000
-  ez2cv out/GEHENNA/GEHENNA_raw.json --from-raw
+  ez2rc
+  ez2rc config/GEHENNA.toml
+  ez2rc config/GEHENNA.toml --debug-video 500:2000
+  ez2rc out/GEHENNA/GEHENNA_raw.json --from-raw
 """
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="ez2cv",
-        description="Extract an EZ2ON chart from gameplay video",
+        prog="ez2rc",
+        description="EZ2Re:Chart — extract an EZ2ON REBOOT : R chart from gameplay video",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

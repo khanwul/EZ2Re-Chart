@@ -9,7 +9,7 @@ Layout
   the global time signature.
 
 CLI:
-    python -m ez2cv.visualize [out/<song>/<difficulty>/<song>_chart.json]
+    python -m ez2rc.visualize [out/<song>/<difficulty>/<song>_chart.json]
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from ez2cv.io import read_chart
+from ez2rc.io import read_chart
 
 # ───────────────────────────── styling knobs ──────────────────────────────
 
@@ -270,7 +270,7 @@ def render(chart_path: Path, out_path: Path) -> None:
 # ─────────────────────────────────── CLI ──────────────────────────────────
 
 if __name__ == "__main__":
-    # Usage: python -m ez2cv.visualize [<song>_chart.json]
+    # Usage: python -m ez2rc.visualize [<song>_chart.json]
     if len(sys.argv) >= 2:
         chart_path = Path(sys.argv[1])
     else:

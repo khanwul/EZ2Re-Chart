@@ -6,15 +6,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ez2cv.chart.barline import ReconstructResult, reconstruct_barlines
-from ez2cv.chart.clock import BPMSegment, TickClock
-from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.chart.quantize import (ALLOWED_DENOMS, DEFAULT_ALPHA,
+from ez2rc.chart.barline import ReconstructResult, reconstruct_barlines
+from ez2rc.chart.clock import BPMSegment, TickClock
+from ez2rc.chart.meter import TimeSignature, TimeSigVariant
+from ez2rc.chart.quantize import (ALLOWED_DENOMS, DEFAULT_ALPHA,
                                   DEFAULT_TRIPLET_CONTEXT_PENALTY,
                                   TRIPLET_DENOMS, grid_distances)
-from ez2cv.detection import RawChart
-from ez2cv.detection.barline import BarlineEvent
-from ez2cv.detection.beat import BeatEvent
+from ez2rc.detection import RawChart
+from ez2rc.detection.barline import BarlineEvent
+from ez2rc.detection.beat import BeatEvent
 
 
 @dataclass

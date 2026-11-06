@@ -1,4 +1,4 @@
-"""EZ2CV gameplay-video chart extraction."""
+"""EZ2Re:Chart gameplay-video chart extraction."""
 
 from .chart import Chart, ChartNote, build_chart
 from .detection import DetectionPipeline, RawChart

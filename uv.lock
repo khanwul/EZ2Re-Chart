@@ -69,7 +69,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ez2cv"
+name = "ez2rc"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

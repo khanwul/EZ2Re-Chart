@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from ez2cv.detection.pipeline import _frame_to_ms, _timeline_duration_ms
-from ez2cv.detection.debug_viz import _draw_overlay_frame
-from ez2cv.video import Preprocessor, _alignment_offset
+from ez2rc.detection.pipeline import _frame_to_ms, _timeline_duration_ms
+from ez2rc.detection.debug_viz import _draw_overlay_frame
+from ez2rc.video import Preprocessor, _alignment_offset
 
 
 class _Capture:

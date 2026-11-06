@@ -1,6 +1,6 @@
-# EZ2CV Architecture
+# EZ2Re:Chart Architecture
 
-EZ2CV has two computational phases separated by a durable JSON checkpoint:
+EZ2Re:Chart has two computational phases separated by a durable JSON checkpoint:
 video detection in milliseconds, followed by musical chart inference in ticks.
 
 ## End-to-end flow

@@ -10,16 +10,16 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ez2cv.detection import RawChart
-from ez2cv.chart.clock import BPMSegment, TickClock
-from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.chart.quantize import (MEASURE_GRID_LEVELS, SnapResult,
+from ez2rc.detection import RawChart
+from ez2rc.chart.clock import BPMSegment, TickClock
+from ez2rc.chart.meter import TimeSignature, TimeSigVariant
+from ez2rc.chart.quantize import (MEASURE_GRID_LEVELS, SnapResult,
                                   choose_measure_grid, choose_measure_grids,
                                   grid_distances,
                                   snap_by_measure,
                                   snap_tick,
                                   TRIPLET_DENOMS)
-from ez2cv.chart.timeline import infer_timeline
+from ez2rc.chart.timeline import infer_timeline
 
 
 TIMING_SIGMA_MULTIPLIER = 2.0

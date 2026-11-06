@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from ez2cv.detection.tracking import NoteTracker, TrackedEdge
+from ez2rc.detection.tracking import NoteTracker, TrackedEdge
 
 
 class NoteTrackerTest(unittest.TestCase):

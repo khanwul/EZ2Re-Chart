@@ -9,14 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import numpy as np
 
-from ez2cv.config import RunConfig
-from ez2cv.video import Preprocessor
-from ez2cv.detection.stage1 import ProjectionDetector
-from ez2cv.detection.stage2 import TemplateMatcher
-from ez2cv.detection.tracking import (NoteTracker, LongnoteStateMachine, RawNote,
+from ez2rc.config import RunConfig
+from ez2rc.video import Preprocessor
+from ez2rc.detection.stage1 import ProjectionDetector
+from ez2rc.detection.stage2 import TemplateMatcher
+from ez2rc.detection.tracking import (NoteTracker, LongnoteStateMachine, RawNote,
                              merge_duplicate_triggers)
-from ez2cv.detection.beat import BeatDetector, BeatEvent
-from ez2cv.detection.barline import MeasureLineDetector, MeasureLineTracker, BarlineEvent
+from ez2rc.detection.beat import BeatDetector, BeatEvent
+from ez2rc.detection.barline import MeasureLineDetector, MeasureLineTracker, BarlineEvent
 
 
 # event type order for the chronological feed (a tie in ms must still open a

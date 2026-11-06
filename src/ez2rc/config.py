@@ -12,7 +12,7 @@ Resolution flow
 
 Usage
 -----
-    from ez2cv.config import load_config
+    from ez2rc.config import load_config
     config = load_config("config/song.toml")
     config.summary()
     for lane in config.lanes:
@@ -225,7 +225,7 @@ def _build_provenance(*, config_root: Path, source_files: dict[str, Path],
                       template_files: dict[str, Path], video_path: Path,
                       resolved_config: dict) -> dict:
     try:
-        package_version = version("ez2cv")
+        package_version = version("ez2rc")
     except PackageNotFoundError:
         package_version = "unknown"
     canonical = json.dumps(
@@ -244,7 +244,7 @@ def _build_provenance(*, config_root: Path, source_files: dict[str, Path],
         finally:
             cap.release()
     return {
-        "ez2cv_version": package_version,
+        "ez2rc_version": package_version,
         "git_commit": _git_commit(config_root),
         "opencv_version": cv2.__version__,
         "resolved_config": resolved_config,

@@ -7,16 +7,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ez2cv.chart import build_chart
-from ez2cv.chart.clock import BPMSegment, TickClock
-from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.cli import main, run
-from ez2cv.config import _git_commit
-from ez2cv.detection import RawChart
-from ez2cv.detection.barline import BarlineEvent
-from ez2cv.detection.beat import BeatEvent
-from ez2cv.detection.tracking import RawNote
-from ez2cv.io import (read_chart, read_raw, serialize_chart, serialize_raw,
+from ez2rc.chart import build_chart
+from ez2rc.chart.clock import BPMSegment, TickClock
+from ez2rc.chart.meter import TimeSignature, TimeSigVariant
+from ez2rc.cli import main, run
+from ez2rc.config import _git_commit
+from ez2rc.detection import RawChart
+from ez2rc.detection.barline import BarlineEvent
+from ez2rc.detection.beat import BeatEvent
+from ez2rc.detection.tracking import RawNote
+from ez2rc.io import (read_chart, read_raw, serialize_chart, serialize_raw,
                       write_chart, write_raw)
 
 
@@ -52,7 +52,7 @@ def _raw_chart() -> RawChart:
 
 class RawCheckpointTest(unittest.TestCase):
     def test_missing_git_executable_does_not_block_config(self):
-        with patch("ez2cv.config.subprocess.run", side_effect=FileNotFoundError):
+        with patch("ez2rc.config.subprocess.run", side_effect=FileNotFoundError):
             self.assertIsNone(_git_commit(Path.cwd()))
 
     def test_no_input_runs_every_song_config(self):
@@ -62,7 +62,7 @@ class RawCheckpointTest(unittest.TestCase):
             for path in (config / "z.toml", config / "a.toml",
                          config / "song.toml", config / "profiles/p.toml"):
                 path.write_text("", encoding="utf-8")
-            with patch("ez2cv.cli.run") as run_all:
+            with patch("ez2rc.cli.run") as run_all:
                 self.assertEqual(main([]), 0)
             self.assertEqual([call.args[0] for call in run_all.call_args_list],
                              [config / "a.toml", config / "z.toml"])
@@ -172,9 +172,9 @@ class RawCheckpointTest(unittest.TestCase):
         config = SimpleNamespace(song_name="demo", difficulty="SHD",
                                  summary=lambda: None)
         with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir), \
-                patch("ez2cv.cli.load_config", return_value=config), \
-                patch("ez2cv.cli.DetectionPipeline") as pipeline, \
-                patch("ez2cv.cli.build_chart", side_effect=RuntimeError("boom")):
+                patch("ez2rc.cli.load_config", return_value=config), \
+                patch("ez2rc.cli.DetectionPipeline") as pipeline, \
+                patch("ez2rc.cli.build_chart", side_effect=RuntimeError("boom")):
             pipeline.return_value.run.return_value = raw
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 with redirect_stdout(StringIO()):
@@ -190,7 +190,7 @@ class RawCheckpointTest(unittest.TestCase):
 
         payload = serialize_chart(chart)
         self.assertEqual((payload["format"], payload["version"]),
-                         ("ez2cv.chart", "3.3"))
+                         ("ez2rc.chart", "3.3"))
         self.assertEqual(payload["meta"]["game"], "ez2on_reboot_r")
         self.assertEqual(payload["meta"]["difficulty"], "SHD")
         self.assertEqual(payload["timing"]["meter_events"], [

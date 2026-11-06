@@ -12,9 +12,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.detection.barline import BarlineEvent
-from ez2cv.detection.beat import BeatEvent
+from ez2rc.chart.meter import TimeSignature, TimeSigVariant
+from ez2rc.detection.barline import BarlineEvent
+from ez2rc.detection.beat import BeatEvent
 
 
 DEFAULT_NUMERATORS = tuple(range(1, 8))
