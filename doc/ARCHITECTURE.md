@@ -1,137 +1,110 @@
-# EZ2Re:Chart Architecture
+# EZ2Re:Chart v2 Architecture
 
-EZ2Re:Chart has two computational phases separated by a durable JSON checkpoint:
-video detection in milliseconds, followed by musical chart inference in ticks.
+v2 collects visual observations, estimates shared scroll motion, accumulates
+evidence, and selects tap/long-note intervals. It currently exports partial
+pixel results. Conversion to calibrated video times and musical beats is pending.
+The previous pipeline is preserved under the `v1` tag.
 
-## End-to-end flow
+## Pipeline
 
 ```mermaid
 flowchart LR
-    cfg["song.toml"] --> load["load_config()"]
-    skin["skin.toml"] --> load
-    profile["profile.toml"] --> load
-    templates["template PNGs"] --> load
-    load --> run["RunConfig"]
-
-    video[["gameplay video"]] --> detect["DetectionPipeline"]
-    run --> detect
-    detect --> raw[("RawChart — milliseconds")]
-    raw --> writeRaw["write_raw()"]
-    writeRaw --> rawJson[/"*_raw.json"/]
-
-    raw --> build["build_chart()"]
-    rawJson --> read["read_raw()"]
-    read --> build
-    build --> chart[("Chart — ticks")]
-    chart --> writeChart["write_chart()"]
-    writeChart --> chartJson[/"*_chart.json"/]
+    config["v2 song + profile + algorithm"] --> observation
+    video["video"] --> capture["capture: frames and PTS"]
+    capture --> observation["observation: template and body evidence"]
+    observation --> motion["motion: shared scroll"]
+    observation --> fusion["fusion: common-coordinate evidence"]
+    motion --> fusion
+    observation --> decode["decode: tap and long-note intervals"]
+    motion --> decode
+    fusion --> decode
+    decode --> export["partial JSON and report"]
+    decode -.-> timing["timing: pending"]
 ```
 
-The raw checkpoint is written before chart inference, so chart conversion can
-be retried without decoding the video again.
+The public entry point delegates to `ez2rc.v2.cli`. `runner.execute()` coordinates
+the stages and creates a new run directory for each attempt.
 
-## Configuration boundary
-
-`load_config()` merges three TOML tiers:
-
-| Input | Responsibility |
+| Module in `src/ez2rc/v2/` | Responsibility |
 | --- | --- |
-| `config/<song>.toml` | video, difficulty, FPS, note speed, tick resolution, BPM range |
-| `config/skins/<skin>/skin.toml` | colors, templates, channels, thresholds |
-| `config/profiles/<resolution>/<mode>.toml` | pixel geometry and measured speed |
+| `config.py` | Versioned song, profile, and algorithm TOML validation |
+| `capture.py` | PyAV decoding, original frame IDs, PTS, and rational time bases |
+| `observation.py` | Panel alignment, template candidates, body evidence, repeat hints |
+| `motion.py` | Shared scroll estimates with explicit uncertainty |
+| `fusion.py` | Evidence accumulation on common-coordinate tiles |
+| `decode.py` | Interval hypotheses, resource constraints, exact best path and alternatives |
+| `timing.py` | Fixed-BPM arithmetic; origin and grid inference remain pending |
+| `contracts.py` | Chart, event, timing, and uncertainty contracts |
+| `storage.py` | Content-addressed caches, integrity checks, atomic publication |
+| `export.py` | Versioned JSON artifacts and a static HTML report |
 
-`RunConfig` contains decoded templates and stays inside video/detection code. It
-validates key counts, channels, geometry, timing bounds, and profile calibration.
+## Configuration and coordinates
 
-The 1920×1080 profiles cover 4K, 5K, 6K, and 8K. Only 5K has been verified on
-real recordings; the other modes are centered bootstrap geometry and must be
-recalibrated when the panel differs.
+Song TOML selects a video, recording profile, analysis interval, metadata, and
+fixed BPM. Optional algorithm TOML controls observation, motion, fusion, and
+decode settings. The bundled profile targets 1920×1080, 5K, speed-8 recordings.
+It declares lane geometry, template paths, alignment limits, and the unverified
+tap/head/tail calibration state.
 
-## Detection phase
+Frames keep their original decode ordinals, PTS, and time bases. Partial-range
+decoding starts at the original video beginning before filtering the requested
+interval, so the video time origin and frame IDs are preserved. Missing PTS is
+an error unless the explicit FPS fallback policy is enabled.
 
-`Preprocessor` streams one frame at a time into three paths:
+Motion maps observations to a shared pixel coordinate using
+`q = scroll + judge_y - template_y`, with a kind-specific offset only when its
+calibration is verified. This coordinate is distinct from milliseconds and beats.
+Uncertainty from sparse observations, ambiguous motion, and analysis boundaries
+remains explicit.
 
-```mermaid
-flowchart LR
-    frame["PreprocessedFrame"] --> s1["projection"]
-    s1 --> s2["template match"]
-    s2 --> tracker["note tracking"]
-    tracker --> notes["RawNote[]"]
+## Candidate selection
 
-    frame --> beat["beat detector"]
-    beat --> beats["BeatEvent[]"]
+Observations retain competing tap/head/tail interpretations and body evidence.
+Fusion limits duplicate support and preserves original observation references.
+The decoder constructs per-lane tap, head-to-tail, and incomplete hypotheses,
+then selects a compatible minimum-cost path. It retains competitive alternatives
+and the costs and evidence behind each candidate.
 
-    s1 --> bar["barline detector/tracker"]
-    bar --> bars["BarlineEvent[]"]
+Events may be `resolved`, `ambiguous`, or `incomplete` in pixel space. A pixel
+`resolved` state does not establish calibrated note timing. An unseen endpoint
+remains unknown; a truncated long note is not silently converted to a tap.
 
-    notes --> raw["RawChart"]
-    beats --> raw
-    bars --> raw
+## Caches and reconstruction
+
+Each stage has a versioned manifest and hashed chunks. Cache keys include the
+relevant source identity, parameters, algorithm version, and parent cache IDs.
+
+```text
+capture -> observation -> motion
+observation + motion -> fusion
+observation + motion + fusion -> decode
 ```
 
-Important invariants:
+`extract` creates or reuses these stages. `reconstruct` starts from an existing
+observation cache and reuses downstream stages when their inputs match; it does
+not decode video or reload template pixels. Present source/profile/template
+files are still checked for identity changes. Observation parameter or geometry
+changes require a new extraction.
 
-- Decode-time resolution must exactly match the geometry profile. The initial
-  two seconds are searched for the calibrated cyan judgment band, then the
-  main decode restarts at frame zero and normalizes translation of every lane
-  and beat ROI while retaining the profile's logical coordinates.
-  Only translation within the configured limit is accepted; scale, rotation,
-  a missing band, and FPS mismatch fail unless `--force` explicitly accepts
-  the uncorrected calibration.
-- Detection thresholds use unnormalized 0–255 channel values.
-- Stage 1 is recall-oriented; Stage 2 provides template precision.
-- The barline detector reuses Stage 1 projections.
-- Beat events report the rise edge of the POW LED flash.
-- Fractional frame crossings are mapped through decoded container PTS; a
-  provenance-marked configured-FPS fallback is used only when the backend does
-  not expose a monotonic presentation timeline. Raw duration is derived from
-  the same decoded PTS timeline.
-- Tracking interpolates judgment-line crossings and records separate head/tail
-  timing uncertainty.
-- Detection stops at milliseconds and has no BPM or grid dependency.
+Cache writes are published atomically. Incomplete or corrupt caches are not
+silently reused. Run artifacts reference the stage data used for that attempt;
+later attempts get separate run directories.
 
-## Raw checkpoint
+## Output and completion
 
-`RawChart` contains JSON-safe metadata and events:
+A run contains `run.json`, `chart.json`, `report.html`, `artifacts/events.json`,
+and the stage cache artifacts. `run.json` records code identity, effective
+settings, stage status, elapsed time, and any failure.
 
-- song/skin/key-mode metadata and lane colors;
-- FPS, frame count, video resolution, and source path;
-- tick resolution and BPM bounds needed for chart reconstruction;
-- raw notes, beats, barlines, confidence, extrapolation state, head/tail timing
-  sigma, and pairing status.
+Current successful runs complete visual inference and export with only `timing`
+pending. They return exit code `2`, set chart status to `partial`, and leave
+the final beat-note list empty. The report and event artifacts carry the visual
+results. Exit code `1` indicates failure; `0` is reserved for complete output.
 
-It excludes image arrays but stores resolved scalar configuration and source,
-template, and video fingerprints.
+## Tests
 
-## Chart phase
-
-`build_chart(raw)` performs no video or TOML I/O:
-
-1. Evaluate hidden-beat insertion and false-beat deletion using meter, tempo,
-   edit, and raw-onset grid costs.
-2. Index detected barlines on the repaired beat stream.
-3. Use dynamic programming to drop false lines, infer hidden boundaries, and
-   choose each measure's numerator from 1 through 7.
-4. Fit step and linear-ramp tempo candidates with residual and complexity costs.
-   Reject bounded clocks with excessive completed-clock residual, phase-fit the
-   result to barlines, and retain BPM normalization only when grid fit improves.
-5. Recover supported tempo changes hidden between beat flashes.
-6. Build one canonical `TickClock`; conversion uses the same BPM segments and
-   tick-zero offset that are serialized.
-7. Snap note heads to a measure-adaptive grid from `1/4` through `1/192`.
-   Fine grids require repeated distinct onsets; chord lanes count as one onset.
-   Timing misses covered by endpoint uncertainty are reported separately.
-8. Estimate a non-positive chart-wide early tail-observation bias, select a
-   shared tail vocabulary from repeated evidence, and re-fit that bias against
-   the selected vocabulary. Compare adaptive absolute-tail and relative-length
-   snaps. A failed tail snap remains a reviewable longnote instead of silently
-   becoming a tap.
-
-`Chart` contains metadata, BPM and meter timelines, notes, barlines, statistics,
-and per-note diagnostics. It does not depend on detection configuration objects.
-
-## Verification
-
-`tests/` contains standard-library `unittest` checks plus a procedural lossless
-video that exercises decode, detection, pairing, timeline inference, snapping,
-and chart serialization end to end.
+The public `unittest` suite uses procedural frames, templates, videos, and
+caches. It covers timestamp preservation, configuration contracts, cache
+integrity and reuse, observations, motion, evidence conservation, interval
+selection, and partial-result export. These checks do not establish accuracy
+on arbitrary recordings or complete timing support.

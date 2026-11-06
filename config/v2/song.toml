@@ -1,0 +1,17 @@
+schema_version = 1
+
+[input]
+video = "../../samples/example.mp4"
+profile = "ez2on_5k_1080p_speed8"
+
+[metadata]
+title = "Example"
+difficulty = "SHD"
+
+[timing]
+mode = "fixed"
+bpm = "200"
+
+# Optional common settings, resolved relative to this file:
+# [algorithm]
+# config = "algorithm.toml"

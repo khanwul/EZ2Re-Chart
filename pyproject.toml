@@ -1,6 +1,6 @@
 [project]
 name = "ez2rc"
-version = "0.1.0"
+version = "0.2.0"
 description = "EZ2Re:Chart — extract chart data from EZ2ON REBOOT : R gameplay videos"
 readme = "README.md"
 license-files = ["LICENSE"]
@@ -8,8 +8,7 @@ requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.5.4",
     "opencv-python-headless>=5.0.0.93",
-    "matplotlib>=3.11.2",
-    "pillow>=13.0.0",
+    "av>=19.0.2",
 ]
 
 [project.scripts]

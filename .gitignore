@@ -20,6 +20,8 @@ __pycache__/
 
 # Per-song settings and note templates
 /config/*.toml
-!/config/song.toml
+/config/v2/*.toml
+!/config/v2/song.toml
+!/config/v2/algorithm.toml
 /config/skins/*/*/*
 !/config/skins/*/*/.gitkeep

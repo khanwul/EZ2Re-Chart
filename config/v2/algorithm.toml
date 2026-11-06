@@ -1,0 +1,10 @@
+schema_version = 1
+chunk_frames = 120
+timestamp_policy = "strict"
+brightness_threshold = 40.0
+edge_threshold = 12.0
+search_radius_px = 8
+alignment_probe_ms = 2000.0
+barline_min_brightness = 30.0
+barline_max_brightness = 180.0
+barline_max_thickness = 8
