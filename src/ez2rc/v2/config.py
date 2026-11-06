@@ -126,6 +126,32 @@ class FusionConfig:
 
 
 @dataclass(frozen=True)
+class DecodeConfig:
+    endpoint_radius_px: float = 2.0
+    support_weight: float = 1.0
+    note_cost: float = 0.8
+    endpoint_reward: float = 2.0
+    additional_endpoint_cost: float = 1.0
+    body_reward: float = 1.0
+    body_only_reward: float = 3.0
+    body_bright: float = 0.20
+    body_dark: float = 0.08
+    absence_cost_per_px: float = 0.12
+    unavailable_cost_per_px: float = 0.002
+    missing_endpoint_cost: float = 0.8
+    ambiguity_cost: float = 0.35
+
+    def __post_init__(self):
+        for key in self.__dataclass_fields__:
+            number(getattr(self, key), key, 0)
+        for key in ("endpoint_radius_px", "support_weight", "absence_cost_per_px",
+                    "unavailable_cost_per_px"):
+            number(getattr(self, key), key, 0.001)
+        if not 0 <= self.body_dark < self.body_bright <= 1:
+            raise ConfigError("decode body thresholds must satisfy 0 <= dark < bright <= 1")
+
+
+@dataclass(frozen=True)
 class AlgorithmConfig:
     chunk_frames: int = 120
     timestamp_policy: str = "strict"
@@ -138,10 +164,12 @@ class AlgorithmConfig:
     barline_max_thickness: int = 8
     motion: MotionConfig = field(default_factory=MotionConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
+    decode: DecodeConfig = field(default_factory=DecodeConfig)
 
     def __post_init__(self):
-        if not isinstance(self.motion, MotionConfig) or not isinstance(self.fusion, FusionConfig):
-            raise ConfigError("motion and fusion must be parameter tables")
+        if (not isinstance(self.motion, MotionConfig) or not isinstance(self.fusion, FusionConfig)
+                or not isinstance(self.decode, DecodeConfig)):
+            raise ConfigError("motion, fusion and decode must be parameter tables")
         integer(self.chunk_frames, "chunk_frames", 1)
         integer(self.search_radius_px, "search_radius_px")
         integer(self.barline_max_thickness, "barline_max_thickness", 1)
@@ -156,7 +184,7 @@ class AlgorithmConfig:
         number(self.alignment_probe_ms, "alignment_probe_ms", 0.001)
 
     def observation_parameters(self):
-        return {k: v for k, v in asdict(self).items() if k not in {"timestamp_policy", "motion", "fusion"}}
+        return {k: v for k, v in asdict(self).items() if k not in {"timestamp_policy", "motion", "fusion", "decode"}}
 
 
 @dataclass(frozen=True)
@@ -233,7 +261,7 @@ def load_algorithm(path: Path | None) -> AlgorithmConfig:
         return AlgorithmConfig()
     data = load_toml(path)
     table(data, {"schema_version", *AlgorithmConfig.__dataclass_fields__})
-    for name, cls in (("motion", MotionConfig), ("fusion", FusionConfig)):
+    for name, cls in (("motion", MotionConfig), ("fusion", FusionConfig), ("decode", DecodeConfig)):
         if name in data:
             table(data[name], cls.__dataclass_fields__)
             data[name] = cls(**data[name])

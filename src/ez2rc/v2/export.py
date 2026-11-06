@@ -30,13 +30,14 @@ def chart_payload(chart: Chart) -> dict:
 
 
 def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_ref=None, fusion_ref=None,
-                   pending_stages=(), candidates=()) -> dict:
+                   decode_ref=None, pixel_intervals=(), pending_stages=(), candidates=()) -> dict:
     ids = [event.id for event in events]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate event ID")
     return {"format": "ez2rc.events", "schema_version": 1,
             "motion_ref": motion_ref, "observation_ref": observation_ref,
             "fusion_ref": fusion_ref,
+            "decode_ref": decode_ref, "pixel_intervals": list(pixel_intervals),
             "pending_stages": list(pending_stages), "candidates": list(candidates),
             "events": [asdict(e) for e in sorted(events, key=lambda e: e.id)]}
 
@@ -97,7 +98,8 @@ def read_chart(path: Path) -> dict:
 
 
 def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observation_ref: str,
-                  candidates=(), motion_ref=None, fusion_ref=None, diagnostics=None):
+                  candidates=(), motion_ref=None, fusion_ref=None, decode_ref=None,
+                  pixel_intervals=(), diagnostics=None):
     event_ids = {e.id for e in events}
     if not {n.id for n in (*chart.notes, *chart.unresolved)} <= event_ids:
         raise ValueError("chart IDs must link to events")
@@ -112,6 +114,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
     write_json(root / "chart.json", chart_payload(chart))
     write_json(root / "artifacts/events.json", events_payload(
         events, observation_ref=observation_ref, motion_ref=motion_ref, fusion_ref=fusion_ref,
+        decode_ref=decode_ref, pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
     items = "".join(f"<li id='{escape(e.id, quote=True)}'>Lane {e.lane + 1}: "
                     f"{escape(e.status)} — {escape(e.reason or '')}</li>" for e in chart.unresolved)
@@ -124,6 +127,16 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                   "Visual scores are not probabilities; empty notes do not indicate an empty chart.</p>"
                   f"<p><a href='{escape(motion_ref, quote=True)}'>Scroll evidence</a> · "
                   f"<a href='{escape(fusion_ref, quote=True)}'>Accumulated evidence</a></p>")
+        if decode_ref:
+            states = ", ".join(f"{key}: {value}" for key, value in diagnostics['decode'].items())
+            visual += (f"<p>Pixel interval states: {escape(states)}. Video times and beats remain pending.</p>"
+                       f"<p><a href='{escape(decode_ref, quote=True)}'>Interval candidates and costs</a></p>")
+    rows = "".join(f"<tr><td>{p['lane'] + 1}</td><td>{escape(p['status'])}</td>"
+                   f"<td>{escape(', '.join(str(c['start_px']) + ' → ' + str(c['end_px']) for c in p['selected_intervals']) or 'noise alternative')}</td>"
+                   f"<td>{p['selected_cost']:.3f} / {p['alternative_cost']:.3f}</td></tr>" for p in pixel_intervals)
+    pixel_table = ("<table><caption>Relative pixel intervals; costs cover the whole lane</caption>"
+                   "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th></tr>"
+                   f"{rows}</table>") if rows else ""
     report = ("<!doctype html><html lang='en'><meta charset='utf-8'>"
               f"<title>{escape(chart.metadata.title)} — EZ2Re:Chart</title>"
               "<style>body{font:16px system-ui;max-width:70ch;margin:3rem auto;padding:0 1rem}"
@@ -131,7 +144,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
               f"<h1>{escape(chart.metadata.title)}</h1><p>Result: {chart.status}</p>"
               f"<p>{escape(chart.timing.reason or 'Musical timeline resolved.')}</p>"
               f"<p>Pending stages: {escape(pending or 'none')}</p>"
-              f"{visual}"
+              f"{visual}{pixel_table}"
               f"<ul>{items}</ul><p><a href='chart.json'>Chart</a> · "
               "<a href='artifacts/events.json'>Events and evidence references</a></p></html>")
     (root / "report.html").write_text(report, encoding="utf-8")

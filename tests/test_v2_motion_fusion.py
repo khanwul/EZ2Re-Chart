@@ -180,7 +180,7 @@ class MotionFusionTest(unittest.TestCase):
             status=json.loads((run/'run.json').read_text())
             self.assertEqual(status['stages']['motion']['status'],'complete')
             self.assertEqual(status['stages']['fusion']['status'],'complete')
-            chart=json.loads((run/'chart.json').read_text()); self.assertEqual(chart['pending_stages'],['decode','timing'])
+            chart=json.loads((run/'chart.json').read_text()); self.assertEqual(chart['pending_stages'],['timing'])
             events=json.loads((run/'artifacts/events.json').read_text())
             self.assertTrue((run/events['fusion_ref']).is_file())
             (root/'algo.toml').write_text('schema_version = 1\nchunk_frames = 2\n[fusion]\nunknown_weight = 0.3\n')

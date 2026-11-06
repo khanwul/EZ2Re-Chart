@@ -19,6 +19,7 @@ from .export import write_outputs
 from .observation import collect, open_observations
 from .motion import estimate
 from .fusion import accumulate
+from .decode import infer, output_events
 from .storage import Cache, digest, file_hash, safe_component, write_json
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
@@ -117,15 +118,19 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                      "algorithm_version": cache.manifest["key"]["algorithm_version"]}
             attach_cache(cache, root / "artifacts" / ("observations" if stage == "observation" else stage))
         motion = None
-        for active in ("motion", "fusion"):
+        for active in ("motion", "fusion", "decode"):
             run["stages"][active]["status"] = "running"
             write_json(root / "run.json", run)
             stage_started = time.monotonic()
             if active == "motion":
                 cache, reused = estimate(observations, algorithm.motion, cache_root or output_root / ".cache")
                 motion = cache
-            else:
+            elif active == "fusion":
                 cache, reused = accumulate(observations, motion, algorithm.fusion, cache_root or output_root / ".cache")
+                fusion = cache
+            else:
+                cache, reused = infer(observations, motion, fusion, algorithm.decode, cache_root or output_root / ".cache")
+                decoded = cache
             run["cost"][f"{active}_seconds"] = time.monotonic() - stage_started
             run["stages"][active] = {"status": "complete", "cache_id": cache.id, "reused": reused,
                                       "algorithm_version": cache.manifest["key"]["algorithm_version"],
@@ -136,13 +141,17 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
         profile_data = meta["profile"]
+        events, pixel_intervals = output_events(decoded)
         chart = Chart(
             Metadata(profile_data["game"], profile_data["mode"], len(profile_data["lanes"]),
                      song.title, song.difficulty), Timing(song.bpm),
-            pending_stages=("decode", "timing"))
-        write_outputs(root, chart, (), observation_ref="artifacts/observations/manifest.json",
+            unresolved=events, pending_stages=("timing",))
+        write_outputs(root, chart, events, observation_ref="artifacts/observations/manifest.json",
                       motion_ref="artifacts/motion/manifest.json", fusion_ref="artifacts/fusion/manifest.json",
+                      decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,
+                      candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
+                                   "decode": decoded.manifest["metadata"]["event_status_counts"],
                                    "endpoint_calibration": "unverified" if any(c["status"] != "verified" for c in profile_data["calibration"].values()) else "verified"})
         run["status"] = chart.status
         run["stages"]["export"] = {"status": "complete", "schema_version": 1}

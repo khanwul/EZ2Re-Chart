@@ -30,3 +30,19 @@ clipped_weight = 0.25
 effect_weight = 0.0
 repeat_group_cap = 1.0
 inferred_motion_weight = 0.25
+
+# Pixel interval inference only. Costs are heuristics, not probabilities.
+[decode]
+endpoint_radius_px = 2.0
+support_weight = 1.0
+note_cost = 0.8
+endpoint_reward = 2.0
+additional_endpoint_cost = 1.0
+body_reward = 1.0
+body_only_reward = 3.0
+body_bright = 0.20
+body_dark = 0.08
+absence_cost_per_px = 0.12
+unavailable_cost_per_px = 0.002
+missing_endpoint_cost = 0.8
+ambiguity_cost = 0.35
