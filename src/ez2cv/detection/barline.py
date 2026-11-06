@@ -35,7 +35,7 @@ The "lit" test runs on the 2-row sliding ENERGY SUM of each projection, not the
 raw row mean: a 1px line scrolling ~33px/frame straddles two pixel rows and
 splits its energy below any single-row gate, so a raw-mean test flickers in and
 out and drops whole measures. Summing adjacent rows recombines the split energy
-regardless of straddle phase (see measureline_detection_findings).
+regardless of straddle phase.
 
 Discriminators (a measure line vs. the things it could be confused with):
   * a full chord of notes  -> also full-width, but ~22px THICK     -> thickness
@@ -47,7 +47,7 @@ Discriminators (a measure line vs. the things it could be confused with):
 Output: BarlineEvent objects, ms-based. Tick/measure interpretation is chart conversion.
 
 NOTE: the detector's tunables (min/max brightness, max thickness, lane slack)
-live in skin.toml [measure_line] and are resolved by calibration.py into
+live in skin.toml [measure_line] and are resolved by config.py into
 ``cal.measure_line`` — exactly like the note thresholds. Each is still exposed
 as a constructor kwarg that OVERRIDES the config, so the module stays
 self-contained and easy to sweep in a test.
