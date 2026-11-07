@@ -54,6 +54,50 @@ class TopContinuationTest(unittest.TestCase):
                 self.assertTrue(matches.any())
                 self.assertTrue(np.all((observed['flags'][matches] & 1) == 0))
 
+    def test_edge_above_matched_patch_does_not_localize_body_response(self):
+        for top, offset in ((0, (0, 0)), (9, (3, 5))):
+            with self.subTest(top=top, offset=offset):
+                frame, profile = top_edge_scene(top=top, offset=offset)
+                dx, dy = offset
+                # A partial end/texture above the maximum adds a strong edge
+                # at row 3. The matched patch at row 4 is still only body.
+                frame.bgr[top + dy:top + dy + 3, 12 + dx:24 + dx] += 25
+                observed = observe_frame(frame, profile, AlgorithmConfig(), offset)
+                self.assertEqual(observed['positions'][0, :, 1].tolist(), [top + 4.] * 3)
+                self.assertGreater(observed['edge'][0, 3], AlgorithmConfig().edge_threshold)
+                self.assertTrue(np.all(observed['scores'][0, :3] > .95))
+                self.assertEqual(observed['flags'][0].tolist(), [5] * 3)
+                category, weight = visibility(observed['flags'][:1], FusionConfig())
+                self.assertEqual(category.tolist(), [[2] * 3])
+                self.assertEqual(weight.tolist(), [[.25] * 3])
+                motion = landmarks(observed, {'lanes': [{}], 'effect_top': top + 65}, MotionConfig())
+                self.assertFalse(any(row[2] == 0 for row in motion))
+
+    def test_edge_at_matched_top_and_dark_prefix_remain_usable(self):
+        for prefix_end, value in ((4, 25), (3, None)):
+            with self.subTest(prefix_end=prefix_end, value=value):
+                frame, profile = top_edge_scene()
+                if value is None:
+                    frame.bgr[:prefix_end, 12:24] = 0
+                else:
+                    # The edge at row 4 belongs to the matched patch, including
+                    # the difference from its preceding row.
+                    frame.bgr[:prefix_end, 12:24] += value
+                observed = observe_frame(frame, profile, AlgorithmConfig(), (0, 0))
+                self.assertEqual(observed['positions'][0, :, 1].tolist(), [4.] * 3)
+                self.assertEqual(observed['flags'][0].tolist(), [4] * 3)
+
+    def test_visible_tail_edge_does_not_make_lower_head_response_usable(self):
+        frame, profile = top_edge_scene()
+        frame.bgr[:3, 12:24] += 25
+        # The tail matches the edge above the false head. Its own template
+        # support includes that edge and must keep an independently usable end.
+        profile.lanes[0].templates['tail'] = frame.bgr[1:5, 12:24].copy()
+        observed = observe_frame(frame, profile, AlgorithmConfig(), (0, 0))
+        self.assertEqual(observed['positions'][0, :, 1].tolist(), [4., 4., 1.])
+        self.assertEqual(observed['flags'][0].tolist(), [5, 5, 4])
+        self.assertTrue(np.all(observed['scores'][0, :3] > .95))
+
     def test_continuation_requires_row_after_whole_kind_specific_template(self):
         frame, profile = top_edge_scene()
         # An edge immediately following the 12-row template is observed. The
@@ -108,7 +152,7 @@ class TopContinuationTest(unittest.TestCase):
             song = load_song(path)
             profile, algorithm = load_profile(song.profile), load_algorithm(song.algorithm)
             current_keys = cache_keys(song, profile, algorithm, 'video-hash')
-            with patch('ez2rc.v2.observation.VERSION', 'visual-observations-1'):
+            with patch('ez2rc.v2.observation.VERSION', 'visual-observations-2'):
                 old_keys = cache_keys(song, profile, algorithm, 'video-hash')
                 capture, old, _ = collect(song, profile, algorithm, root / 'cache')
             self.assertEqual(current_keys[0], old_keys[0])

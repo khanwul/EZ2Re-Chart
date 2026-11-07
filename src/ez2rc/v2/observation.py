@@ -12,7 +12,7 @@ from .capture import VideoReader, VERSION as CAPTURE_VERSION, decoder_parameters
 from .config import AlgorithmConfig, Profile, SongConfig
 from .storage import Cache, CacheError, CacheWriter, digest, file_hash, stage_key
 
-VERSION = "visual-observations-2"
+VERSION = "visual-observations-3"
 KINDS = ("tap", "head", "tail")
 
 
@@ -116,14 +116,14 @@ def observe_frame(frame, profile, algo, offset):
         projection = gray.mean(axis=1)
         edge = np.r_[np.zeros(1, np.float32), np.abs(np.diff(gray, axis=0)).mean(axis=1)]
         # A top-censored brightness run can match an endpoint template well
-        # inside the search window. Only call it continuation while BOTH the
-        # brightness and the lack of vertical edges persist from the viewport
-        # top through the matched patch and its following row. A nearby real
-        # endpoint with an observed edge must remain usable. Use the existing
-        # seed thresholds, not a new similarity or note-length cutoff.
-        breaks = np.flatnonzero((projection < algo.brightness_threshold)
-                                | (edge >= algo.edge_threshold))
-        top_continuation_end = int(breaks[0]) if len(breaks) else len(projection)
+        # inside the search window. Brightness must continue from the viewport
+        # top through the whole matched patch and its following row. Edges
+        # above that patch can belong to a different, partially visible end;
+        # they do not localize this response on the body below it. An edge at
+        # the matched top, inside the patch, or in its following row still
+        # prevents clipping. Use the existing seed thresholds throughout.
+        dark = np.flatnonzero(projection < algo.brightness_threshold)
+        top_bright_end = int(dark[0]) if len(dark) else len(projection)
         projections.append(projection)
         edges.append(edge)
         matching = np.ascontiguousarray(crop(frame.bgr, lane.match_roi, offset))
@@ -140,8 +140,10 @@ def observe_frame(frame, profile, algo, offset):
                 x, y = lane.match_roi[0] + location[0], lane.roi[1] + lo + location[1]
                 candidate_scores.append(score)
                 xy.append((x, y))
+                local_y = y - lane.roi[1]
                 top_continuation = (seed < algo.search_radius_px
-                                    and y - lane.roi[1] + h < top_continuation_end)
+                                    and local_y + h < top_bright_end
+                                    and np.all(edge[local_y:local_y + h + 1] < algo.edge_threshold))
                 # bit 0: clipped search/template; bit 1: judgment-effect zone;
                 # bit 2: visibility/occlusion unknown (not assumed unobscured).
                 candidate_flags.append(int(y <= lane.roi[1] or y + h >= lane.roi[3]
