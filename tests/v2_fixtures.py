@@ -2,10 +2,39 @@
 
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import av
 import cv2
 import numpy as np
+
+from ez2rc.v2.capture import Frame, Stamp
+from ez2rc.v2.config import Lane
+
+
+def top_edge_scene(*, endpoint=False, top=0, offset=(0, 0), body_end=45, frame_id=0):
+    """A horizontal body texture with a weak interior correlation maximum.
+
+    The endpoint has visible vertical edges. Its attenuated texture in the
+    body gives the same template a strong interior maximum without those edges.
+    Neither image nor template comes from game media.
+    """
+    base = np.tile(np.array([40, 70, 100, 140, 200, 220, 220, 200, 140, 100, 70, 40],
+                            float)[None, :, None], (12, 1, 3))
+    detail = np.array([-20, 20, -16, 17, -22, 23, -18, 16, -13, 22, -23, 18])[:, None, None]
+    template = (base + detail).astype(np.uint8)
+    body = np.tile(base[0], (body_end, 1, 1))
+    body[4:16] = base + detail * (.15 if not endpoint else 1.)
+    image = np.zeros((110, 60, 3), np.uint8)
+    dx, dy = offset
+    image[top + dy:top + dy + body_end, 12 + dx:24 + dx] = body
+    lane = Lane((12, top, 24, top + 70), (12, top, 24, top + 70), 'gray',
+                {kind: template.copy() for kind in ('tap', 'head', 'tail')})
+    profile = SimpleNamespace(lanes=[lane], effect_top=top + 65,
+                              beat_roi=(0, 95, 5, 100), lane_count=1)
+    stamp = Stamp(frame_id, 1000 + frame_id * 17, Fraction(1, 1000), frame_id * 17.,
+                  'container_pts', None)
+    return Frame(stamp, image), profile
 
 
 def fixture(root: Path, *, translated=(0, 0), weak=False):

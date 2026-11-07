@@ -12,7 +12,7 @@ from .capture import VideoReader, VERSION as CAPTURE_VERSION, decoder_parameters
 from .config import AlgorithmConfig, Profile, SongConfig
 from .storage import Cache, CacheError, CacheWriter, digest, file_hash, stage_key
 
-VERSION = "visual-observations-1"
+VERSION = "visual-observations-2"
 KINDS = ("tap", "head", "tail")
 
 
@@ -115,6 +115,15 @@ def observe_frame(frame, profile, algo, offset):
         gray = channel(image, lane.channel).astype(np.float32)
         projection = gray.mean(axis=1)
         edge = np.r_[np.zeros(1, np.float32), np.abs(np.diff(gray, axis=0)).mean(axis=1)]
+        # A top-censored brightness run can match an endpoint template well
+        # inside the search window. Only call it continuation while BOTH the
+        # brightness and the lack of vertical edges persist from the viewport
+        # top through the matched patch and its following row. A nearby real
+        # endpoint with an observed edge must remain usable. Use the existing
+        # seed thresholds, not a new similarity or note-length cutoff.
+        breaks = np.flatnonzero((projection < algo.brightness_threshold)
+                                | (edge >= algo.edge_threshold))
+        top_continuation_end = int(breaks[0]) if len(breaks) else len(projection)
         projections.append(projection)
         edges.append(edge)
         matching = np.ascontiguousarray(crop(frame.bgr, lane.match_roi, offset))
@@ -131,9 +140,12 @@ def observe_frame(frame, profile, algo, offset):
                 x, y = lane.match_roi[0] + location[0], lane.roi[1] + lo + location[1]
                 candidate_scores.append(score)
                 xy.append((x, y))
+                top_continuation = (seed < algo.search_radius_px
+                                    and y - lane.roi[1] + h < top_continuation_end)
                 # bit 0: clipped search/template; bit 1: judgment-effect zone;
                 # bit 2: visibility/occlusion unknown (not assumed unobscured).
-                candidate_flags.append(int(y <= lane.roi[1] or y + h >= lane.roi[3])
+                candidate_flags.append(int(y <= lane.roi[1] or y + h >= lane.roi[3]
+                                           or top_continuation)
                                        | (2 if y + h >= profile.effect_top else 0) | 4)
             body = float(projection[seed:min(len(projection), seed + th)].mean()) / 255.0
             indices.append((frame.stamp.frame_id, lane_id, seed))
@@ -249,6 +261,8 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
             "position_error_px": None, "position_error_reason": "not independently calibrated",
             "candidate_id": "f{frame_id}:l{lane}:y{seed_row}",
             "flag_bits": {"clipped": 1, "judgment_effect": 2, "occlusion_unknown": 4},
+            "clipping_policy": "template touches viewport edge, or top-truncated seed search "
+                               "matches an edgeless bright continuation through the following row",
             "barline_columns": ["frame_id", "aligned_y_px", "brightness"],
             "duration_missing_sentinel": -1, "time_unit": "ms since original first frame PTS",
         }
