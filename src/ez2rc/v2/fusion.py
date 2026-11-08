@@ -14,7 +14,7 @@ from .config import FusionConfig
 from .motion import STATUS, frames, timeline
 from .storage import Cache, CacheError, CacheWriter, digest, stage_key
 
-VERSION = "scroll-evidence-2"
+VERSION = "scroll-evidence-3"
 CATEGORIES = ("visible", "unknown", "clipped", "judgment_effect", "occluded")
 
 
@@ -60,6 +60,35 @@ def unique_contributions(values):
     return values[first]
 
 
+def frame_contributions(deposits):
+    """Interpolate distinct dense rows before capping repeated observations.
+
+    Typed peaks are alternative seeds and retain their maximum contribution.
+    Dense rows are adjacent samples: their split weights and weighted scores
+    add within a frame. Keep category masses so clipping at a boundary cannot
+    silently turn mixed visibility into entirely usable evidence.
+    """
+    values = np.zeros((len(deposits), 13))
+    values[:, :8] = deposits
+    values[np.arange(len(values)), 8 + deposits[:, 6].astype(int)] = deposits[:, 3]
+    endpoints = unique_contributions(values[values[:, 2] != 3])
+    body = values[values[:, 2] == 3]
+    if not len(body):
+        return endpoints
+    order = np.lexsort((body[:, 1], body[:, 0]))
+    body = body[order]
+    starts = np.flatnonzero(np.r_[True, np.any(body[1:, :2] != body[:-1, :2], axis=1)])
+    merged = body[starts].copy()
+    merged[:, 3] = np.add.reduceat(body[:, 3], starts)
+    merged[:, 4] = np.add.reduceat(body[:, 3] * body[:, 4], starts) / merged[:, 3]
+    merged[:, 5] = np.maximum.reduceat(body[:, 5], starts)
+    merged[:, 8:] = np.add.reduceat(body[:, 8:], starts, axis=0)
+    # Column6 is only an exclusive input category. The interpolated row uses
+    # the five mass columns, including when its two source rows differ.
+    merged[:, 6] = -1
+    return np.concatenate((endpoints, merged))
+
+
 def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: Path):
     if motion.manifest["key"]["parents"] != [observations.id]:
         raise ValueError("fusion motion/observation lineage mismatch")
@@ -76,7 +105,7 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
     calibration_errors = np.array([c.get("error_px", 0.) if c["status"] == "verified" else 0. for c in calibrations])
     clock = timeline(motion)
     tiles = {}
-    group, pending = None, np.empty((0, 8), np.float64)
+    group, pending = None, np.empty((0, 13), np.float64)
     ledger = []
     count = max_tiles = emitted_bins = 0
     previous_scroll = 0.
@@ -87,7 +116,9 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
             if not len(pending):
                 return
             # Cap applies independently to each spatial evidence cell/channel.
-            pending[:, 3] = np.minimum(pending[:, 3], config.repeat_group_cap)
+            capped = np.minimum(pending[:, 3], config.repeat_group_cap)
+            pending[:, 8:] *= (capped / pending[:, 3])[:, None]
+            pending[:, 3] = capped
             for tid in np.unique(np.floor_divide(pending[:, 1], config.tile_bins).astype(np.int64)):
                 v = pending[np.floor_divide(pending[:, 1], config.tile_bins) == tid]
                 if int(tid) not in tiles:
@@ -100,14 +131,14 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
                 ix = (v[:, 0].astype(int), (v[:, 1] - tid * config.tile_bins).astype(int), v[:, 2].astype(int))
                 tile["score_sum"][ix] += v[:, 3] * v[:, 4]
                 tile["weight_sum"][ix] += v[:, 3]
-                tile["visibility_weight"][(*ix, v[:, 6].astype(int))] += v[:, 3]
+                tile["visibility_weight"][ix] += v[:, 8:]
                 tile["group_count"][ix] += 1
                 tile["error_px"][ix] = np.maximum(tile["error_px"][ix], v[:, 5] + config.grid_px)
                 old = tile["frame_min"][ix]
                 tile["frame_min"][ix] = np.where(old < 0, v[:, 7], np.minimum(old, v[:, 7])).astype(int)
                 tile["frame_max"][ix] = np.maximum(tile["frame_max"][ix], v[:, 7]).astype(int)
             max_tiles = max(max_tiles, len(tiles))
-            pending = np.empty((0, 8), np.float64)
+            pending = np.empty((0, 13), np.float64)
 
         def flush(before=None):
             nonlocal emitted_bins
@@ -179,7 +210,7 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
                 use = w > 0
                 deposits.append(np.column_stack((lane_ids[use], bins[use], kinds[use], w[use],
                                                   values[use], errs[use], cats[use], np.full(use.sum(), frame["id"]))))
-            contribution = unique_contributions(np.concatenate(deposits))
+            contribution = frame_contributions(np.concatenate(deposits))
             pending = unique_contributions(np.concatenate((pending, contribution))) if len(pending) else contribution
             count += len(coords)
             previous_scroll = scroll
@@ -201,8 +232,8 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
                     "coordinate": "q = S + judge_y - (template_top_y + verified_offset); body uses aligned row y",
                     "grid_px": config.grid_px, "kind_columns": ["tap_similarity", "head_similarity", "tail_similarity", "body_brightness_fraction"],
                     "score_semantics": "weighted raw similarities/brightness, not probabilities; score_sum / weight_sum only where weight > 0",
-                    "visibility_categories": list(CATEGORIES), "visibility_policy": "exclusive: judgment_effect > clipped > occluded > unknown > visible",
-                    "repeat_policy": "maximum visibility then similarity per lane/bin/kind/group, capped; confirmed motion groups or provisional equality groups",
+                    "visibility_categories": list(CATEGORIES), "visibility_policy": "exclusive per sample: judgment_effect > clipped > occluded > unknown > visible; dense interpolation preserves category mass",
+                    "repeat_policy": "dense rows interpolate additively within each frame; typed seeds and displayed groups use maximum weight then similarity per lane/bin/kind, capped",
                     "calibration": {k: profile["calibration"][k] for k in ("tap", "head", "tail")},
                     "endpoint_timing_error_px": [c.get("error_px") if c["status"] == "verified" else None for c in calibrations],
                     "observation_position_error_px": meta.get("position_error_px"),
