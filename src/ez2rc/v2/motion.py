@@ -14,7 +14,7 @@ import numpy as np
 from .config import MotionConfig
 from .storage import Cache, CacheError, CacheWriter, digest, stage_key
 
-VERSION = "common-scroll-3"
+VERSION = "common-scroll-4"
 STATUS = {"origin": 0, "observed": 1, "single_lane": 2, "ambiguous": 3,
           "extrapolated": 4, "unresolved": 5, "repeated": 6}
 
@@ -132,6 +132,41 @@ def cache_key(observations, config):
     return stage_key("motion", VERSION, asdict(config), (observations.id,))
 
 
+def _step_interval(models, config):
+    """Only a unique multi-lane adjacent match can constrain an older anchor.
+
+    These are search tolerances, not calibrated confidence bounds. Compute them
+    from raw matches, before trajectory selection or any path filtering.
+    """
+    if not models:
+        return None
+    threshold = max(m['quality'] for m in models) * config.ambiguity_ratio
+    viable = [m for m in models if m['quality'] >= threshold]
+    if len(viable) != 1 or viable[0]['lanes'] < config.min_lanes:
+        return None
+    delta = viable[0]['delta']
+    return delta - config.match_tolerance_px, delta + config.match_tolerance_px
+
+
+def _consistent_paths(models, path, frame_id, config, checks):
+    retained = []
+    for model in models:
+        ref = model['ref']
+        same_segment = ref['path'][0] == path[0]
+        if ref['id'] < frame_id - 1 and same_segment:
+            lower, upper = path[1] - ref['path'][1], path[2] - ref['path'][2]
+            # Both the direct match and each adjacent step have a tolerance.
+            # Touching intervals still agree; do not impose constant velocity.
+            consistent = not (model['delta'] + config.match_tolerance_px < lower
+                              or model['delta'] - config.match_tolerance_px > upper)
+            checks.append((frame_id, ref['id'], model['delta'], lower, upper,
+                           model['quality'], model['lanes'], int(consistent), model['scroll']))
+            if not consistent:
+                continue
+        retained.append(model)
+    return retained
+
+
 def estimate(observations: Cache, config: MotionConfig, root: Path):
     key = cache_key(observations, config)
     try:
@@ -142,13 +177,17 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
     top = profile["lanes"][0]["roi"][1]
     height = max(0, int(profile["effect_top"] - top))
     history = deque(maxlen=config.history_frames)
-    rows, links, alternatives = [], [], []
+    rows, links, alternatives, path_checks = [], [], [], []
     velocity = None
     previous = None
     repeat_edges = []
     for frame in frames(observations):
         points = landmarks(frame, profile, config)
         fid, ms = frame["id"], frame["ms"]
+        # Prefix intervals in one uninterrupted segment of adjacent matches.
+        # A repeat or an uncertain/missing step starts a new segment, so older
+        # references cannot borrow a zero or extrapolated displacement.
+        path = (fid, 0., 0.)
         row = {"frame_id": fid, "timestamp_ms": ms, "scroll_px": 0., "error_px": 0.,
                "step_error_px": 0., "status": STATUS["origin"], "support_lanes": 0,
                "repeat_group": fid, "repeat_confirmed": False, "reference_frame": -1}
@@ -165,7 +204,7 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
                 for q in previous["points"])}
             repeat = similar and len(zero_lanes) >= config.min_lanes
             repeat_edges.append(repeat)
-            models = []
+            models, adjacent = [], []
             if not repeat:
                 # Nearest and older anchors reduce accumulated pixel rounding.
                 refs = list(history)
@@ -179,10 +218,17 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
                         continue
                     limit = min(height, config.max_speed_px_per_ms * elapsed + config.displacement_slack_px)
                     found = match(ref["points"], points, limit, config)
+                    if ref['id'] == previous['id']:
+                        adjacent = found
                     for m in found:
                         m = {**m, "ref": ref, "scroll": ref["row"]["scroll_px"] + m["delta"]}
                         if m["scroll"] + config.match_tolerance_px >= last["scroll_px"]:
                             models.append(m)
+            step = _step_interval(adjacent, config) if fid == previous['id'] + 1 and dt > 0 else None
+            if step is not None:
+                segment, lower, upper = previous['path']
+                path = (segment, lower + step[0], upper + step[1])
+            models = _consistent_paths(models, path, fid, config, path_checks)
             if models:
                 # Prefer strong independent lanes, then the longest anchor.
                 models.sort(key=lambda m: (-m["quality"], m["ref"]["id"], m["scroll"]))
@@ -216,7 +262,7 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
                 error = config.max_speed_px_per_ms * dt + config.displacement_slack_px
                 row.update(scroll_px=last["scroll_px"] + delta, error_px=last["error_px"] + error,
                            step_error_px=error, status=STATUS["extrapolated" if velocity is not None else "unresolved"])
-        frame = {"id": fid, "ms": ms, "group": frame["group"], "points": points,
+        frame = {"id": fid, "ms": ms, "group": frame["group"], "points": points, "path": path,
                  "row": row, "projection": frame["projection"], "edge": frame["edge"]}
         rows.append(row)
         if not repeat_edges or not repeat_edges[-1]:
@@ -254,12 +300,18 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
     arrays = {k: np.array([r[k] for r in rows], dtype=np.bool_ if k == "repeat_confirmed" else np.int64 if k in integers else np.float64) for k in rows[0]}
     link_array = np.asarray(links, np.float64).reshape(-1, 9)
     alternative_array = np.asarray(alternatives, np.float64).reshape(-1, 5)
+    path_array = np.asarray(path_checks, np.float64).reshape(-1, 9)
     metadata = {"observation_cache_id": observations.id, "frame_count": len(rows),
                 "lane_count": len(profile["lanes"]), "status_codes": STATUS,
                 "coordinate": "relative scroll pixels; first observed frame S=0; not beat zero",
                 "error_semantics": "uncalibrated conservative algorithmic envelope; shared drift does not shrink with observation count",
                 "link_columns": ["frame_id", "reference_frame", "lane", "kind", "reference_seed", "seed", "delta_px", "similarity_weight", "residual_px"],
                 "alternative_columns": ["frame_id", "reference_frame", "scroll_px", "support_score", "lanes"],
+                "path_check_columns": ["frame_id", "reference_frame", "delta_px", "path_lower_px", "path_upper_px",
+                                       "support_score", "lanes", "consistent", "scroll_px"],
+                "path_checked_models": len(path_array),
+                "path_rejected_models": int(np.count_nonzero(path_array[:, 7] == 0)),
+                "path_policy": "older direct-match intervals must overlap the sum of unique multi-lane adjacent-match intervals; uncertain or repeated steps break the path; all checked models remain in path_checks",
                 "repeat_policy": "near/exact image agreement plus zero landmark motion and adjacent moving multi-lane support",
                 "status_counts": {name: sum(r["status"] == code for r in rows) for name, code in STATUS.items()},
                 "confirmed_repeat_frames": sum(r["repeat_confirmed"] for r in rows),
@@ -270,7 +322,8 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
             lo, hi = rows[start]["frame_id"], rows[end-1]["frame_id"]
             writer.append(**{k: v[start:end] for k, v in arrays.items()},
                           links=link_array[(link_array[:, 0] >= lo) & (link_array[:, 0] <= hi)],
-                          alternatives=alternative_array[(alternative_array[:, 0] >= lo) & (alternative_array[:, 0] <= hi)])
+                          alternatives=alternative_array[(alternative_array[:, 0] >= lo) & (alternative_array[:, 0] <= hi)],
+                          path_checks=path_array[(path_array[:, 0] >= lo) & (path_array[:, 0] <= hi)])
         return writer.commit(metadata, validate=open_motion), False
 
 
@@ -281,6 +334,7 @@ def open_motion(path, expected_key=None):
         if key["stage"] != "motion" or key["algorithm_version"] != VERSION or len(key["parents"]) != 1:
             raise CacheError("unsupported motion cache")
         n, last_id, last_ms, last_scroll = 0, -1, -1., -1.
+        checked, rejected = 0, 0
         for c in cache.chunks():
             ids = c["frame_id"]
             size = len(ids)
@@ -301,13 +355,31 @@ def open_motion(path, expected_key=None):
                     or np.any(c["support_lanes"] < 0)
                     or np.any(c["support_lanes"] > cache.manifest["metadata"]["lane_count"])):
                 raise CacheError("invalid motion coordinates/status")
-            for name, width in (("links", 9), ("alternatives", 5)):
+            for name, width in (("links", 9), ("alternatives", 5), ("path_checks", 9)):
                 if c[name].ndim != 2 or c[name].shape[1] != width or not np.isfinite(c[name]).all() or not np.isin(c[name][:, 0], ids).all():
                     raise CacheError("invalid motion evidence")
+            paths = c['path_checks']
+            tolerance = key['parameters']['match_tolerance_px']
+            consistent = ((paths[:, 2] + tolerance >= paths[:, 3])
+                          & (paths[:, 2] - tolerance <= paths[:, 4]))
+            if (np.any(paths[:, 1] < 0) or np.any(paths[:, 1] >= paths[:, 0] - 1)
+                    or np.any(paths[:, :2] != np.floor(paths[:, :2]))
+                    or np.any(paths[:, 2] <= 0) or np.any(paths[:, 3] > paths[:, 4])
+                    or np.any(paths[:, 5] < 0) or np.any(paths[:, 6] < 1)
+                    or np.any(paths[:, 6] > cache.manifest['metadata']['lane_count'])
+                    or np.any(paths[:, 6] != np.floor(paths[:, 6]))
+                    or not np.isin(paths[:, 7], [0, 1]).all()
+                    or not np.array_equal(paths[:, 7].astype(bool), consistent)):
+                raise CacheError('invalid motion path checks')
+            checked += len(paths)
+            rejected += int(np.count_nonzero(paths[:, 7] == 0))
             n += size
             last_id, last_ms, last_scroll = int(ids[-1]), c["timestamp_ms"][-1], c["scroll_px"][-1]
         if n != cache.manifest["metadata"]["frame_count"] or key["parents"] != [cache.manifest["metadata"]["observation_cache_id"]]:
             raise CacheError("motion lineage/count mismatch")
+        if (checked != cache.manifest['metadata']['path_checked_models']
+                or rejected != cache.manifest['metadata']['path_rejected_models']):
+            raise CacheError('motion path check count mismatch')
         return cache
     except (KeyError, TypeError, ValueError, OSError, IndexError) as exc:
         raise CacheError(f"invalid motion: {exc}") from exc
@@ -315,4 +387,4 @@ def open_motion(path, expected_key=None):
 
 def timeline(cache):
     chunks = list(cache.chunks())
-    return {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0] if k not in {"links", "alternatives"}}
+    return {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0] if k not in {"links", "alternatives", "path_checks"}}

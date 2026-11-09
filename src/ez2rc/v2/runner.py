@@ -14,13 +14,15 @@ import uuid
 from . import __version__
 from .capture import CaptureError, VERSION as CAPTURE_VERSION, validate_timeline
 from .config import load_algorithm, load_profile, load_song
-from .contracts import Chart, Metadata, STAGES, Timing
+from .contracts import Metadata, STAGES
 from .export import write_outputs
 from .observation import collect, open_observations
 from .motion import estimate
 from .fusion import accumulate
 from .decode import infer, output_events
 from .storage import Cache, digest, file_hash, safe_component, write_json
+from .timing import PROJECTION_VERSION, RESOLUTION_VERSION, project_video_times, resolve_pixel_timing
+from .reference import VERSION as REFERENCE_VERSION, reference_candidates
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
 
@@ -137,25 +139,45 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                       "parents": cache.manifest["key"]["parents"],
                                       "artifact_ref": f"artifacts/{active}/manifest.json"}
             attach_cache(cache, root / "artifacts" / active)
+        active = "timing"
+        projection = project_video_times(observations, motion, decoded)
+        projection_ref = "artifacts/time-projection.json"
+        write_json(root / projection_ref, projection)
+        reference_ref = "artifacts/reference-candidates.json"
+        write_json(root / reference_ref, reference_candidates(
+            observations, motion, song.bpm, beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats))
+        profile_data = meta["profile"]
+        events, pixel_intervals = output_events(decoded)
+        chart, events, resolution = resolve_pixel_timing(
+            events, pixel_intervals, projection,
+            Metadata(profile_data["game"], profile_data["mode"], len(profile_data["lanes"]),
+                     song.title, song.difficulty), song.bpm,
+            beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats,
+            judgment_calibration=song.judgment_calibration)
+        resolution_ref = "artifacts/timing-resolution.json"
+        write_json(root / resolution_ref, resolution)
+        run["stages"]["timing"] = {"status": "pending" if "timing" in chart.pending_stages else "complete",
+                                    "algorithm_version": RESOLUTION_VERSION, "projection_ref": projection_ref,
+                                    "projection_version": PROJECTION_VERSION,
+                                    "reference_candidates_ref": reference_ref,
+                                    "reference_candidates_version": REFERENCE_VERSION,
+                                    "artifact_ref": resolution_ref, "resolved_notes": len(chart.notes),
+                                    "unresolved_events": len(chart.unresolved)}
         active = "export"
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
-        profile_data = meta["profile"]
-        events, pixel_intervals = output_events(decoded)
-        chart = Chart(
-            Metadata(profile_data["game"], profile_data["mode"], len(profile_data["lanes"]),
-                     song.title, song.difficulty), Timing(song.bpm),
-            unresolved=events, pending_stages=("timing",))
         write_outputs(root, chart, events, observation_ref="artifacts/observations/manifest.json",
                       motion_ref="artifacts/motion/manifest.json", fusion_ref="artifacts/fusion/manifest.json",
                       decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,
+                      time_projection_ref=projection_ref, timing_resolution_ref=resolution_ref,
+                      reference_candidates_ref=reference_ref,
                       candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
                                    "decode": decoded.manifest["metadata"]["event_status_counts"],
                                    "endpoint_calibration": "unverified" if any(c["status"] != "verified" for c in profile_data["calibration"].values()) else "verified"})
         run["status"] = chart.status
         run["stages"]["export"] = {"status": "complete", "schema_version": 1}
-        result = EXIT_PARTIAL
+        result = EXIT_COMPLETE if chart.status == "complete" else EXIT_PARTIAL
     except (OSError, ValueError, RuntimeError) as exc:
         if isinstance(exc, CaptureError):
             active = "capture"

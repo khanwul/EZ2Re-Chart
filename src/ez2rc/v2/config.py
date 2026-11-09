@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from fractions import Fraction
 from pathlib import Path
 import math
 import tomllib
@@ -10,7 +11,7 @@ import tomllib
 import cv2
 import numpy as np
 
-from .contracts import decimal_bpm
+from .contracts import decimal_bpm, ratio, read_ratio
 from .storage import file_hash
 
 
@@ -68,6 +69,22 @@ def rectangle(value, width, height):
 
 
 @dataclass(frozen=True)
+class JudgmentCalibration:
+    status: str
+    version: str
+    offset_ms: float | None = None
+    error_ms: float | None = None
+
+    def __post_init__(self):
+        string(self.version, "judgment_calibration.version")
+        if self.status == "verified":
+            number(self.offset_ms, "judgment_calibration.offset_ms")
+            number(self.error_ms, "judgment_calibration.error_ms", 0)
+        elif self.status != "unverified" or self.offset_ms is not None or self.error_ms is not None:
+            raise ConfigError("unverified judgment calibration cannot supply assumed corrections")
+
+
+@dataclass(frozen=True)
 class SongConfig:
     source: Path
     video: Path
@@ -78,9 +95,14 @@ class SongConfig:
     start_ms: float = 0.0
     end_ms: float | None = None
     algorithm: Path | None = None
+    beat_zero_ms: float | None = None
+    measure_beats: Fraction | None = None
+    judgment_calibration: JudgmentCalibration | None = None
 
     def snapshot(self):
-        return {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
+        values = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
+        values['measure_beats'] = ratio(self.measure_beats) if self.measure_beats is not None else None
+        return values
 
 
 @dataclass(frozen=True)
@@ -235,10 +257,23 @@ def load_song(path: str | Path) -> SongConfig:
                  {"input", "metadata", "timing"})
     inp = table(data["input"], {"video", "profile", "start_ms", "end_ms"}, {"video", "profile"})
     meta = table(data["metadata"], {"title", "difficulty"}, {"title", "difficulty"})
-    timing = table(data["timing"], {"mode", "bpm"}, {"mode", "bpm"})
+    timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "measure_beats", "judgment_calibration"}, {"mode", "bpm"})
     if timing["mode"] != "fixed":
         raise ConfigError("only explicitly supplied fixed BPM is implemented")
     decimal_bpm(timing["bpm"])
+    origin = number(timing['beat_zero_ms'], 'timing.beat_zero_ms') if 'beat_zero_ms' in timing else None
+    measure = None
+    if 'measure_beats' in timing:
+        try:
+            measure = read_ratio(timing['measure_beats'])
+            if measure <= 0:
+                raise ValueError('measure length must be positive')
+        except ValueError as exc:
+            raise ConfigError(f'invalid timing.measure_beats: {exc}') from exc
+    judgment = None
+    if 'judgment_calibration' in timing:
+        value = table(timing['judgment_calibration'], {'status', 'version', 'offset_ms', 'error_ms'}, {'status', 'version'})
+        judgment = JudgmentCalibration(**value)
     video = (source.parent / string(inp["video"], "input.video")).resolve()
     profile_name = string(inp["profile"], "input.profile")
     # IDs are resolved in a profiles/ directory beside the song config.
@@ -257,7 +292,8 @@ def load_song(path: str | Path) -> SongConfig:
     if "algorithm" in data:
         settings = table(data["algorithm"], {"config"}, {"config"})
         algorithm = (source.parent / string(settings["config"], "algorithm.config")).resolve()
-    return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm)
+    return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm,
+                      origin, measure, judgment)
 
 
 def load_algorithm(path: Path | None) -> AlgorithmConfig:

@@ -368,6 +368,19 @@ class IntervalDPTest(unittest.TestCase):
             self.assertIn(expected, selected(data))
             self.assertEqual(data['events'][0]['status'], 'incomplete')
 
+    def test_short_boundary_longnote_retains_its_visible_endpoint(self):
+        for length in (3, 30):
+            for points, bodies, expected in (
+                    ([(length, 2)], [(0, length)], ('longnote', None, float(length))),
+                    ([(200 - length, 1)], [(200 - length, 200)], ('longnote', float(200 - length), None))):
+                with self.subTest(length=length, points=points):
+                    data = scene(points, bodies)
+                    self.assertEqual(selected(data), [expected])
+                    self.assertEqual(data['events'][0]['status'], 'incomplete')
+                    self.assertIn('coverage_boundary', data['events'][0]['review_causes'])
+                    self.assertTrue(any(c['start'] is None and c['end'] is None
+                                        for c in data['candidates']))
+
     def test_hidden_body_is_not_observed_absence(self):
         args = ([(20, 1), (120, 2)], [(20, 120)])
         for kwargs in ({'unavailable': [(45, 95)]}, {'occluded': [(45, 95)]}):
