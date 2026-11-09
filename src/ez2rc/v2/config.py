@@ -85,6 +85,61 @@ class JudgmentCalibration:
 
 
 @dataclass(frozen=True)
+class MarkerCalibration:
+    status: str
+    version: str
+    meaning: str
+    offset_ms: float | None = None
+    error_ms: float | None = None
+
+    def __post_init__(self):
+        string(self.version, 'marker_calibration.version')
+        if self.meaning not in ('integer_beat', 'measure_boundary'):
+            raise ConfigError('unknown marker musical meaning')
+        if self.status == 'verified':
+            number(self.offset_ms, 'marker_calibration.offset_ms')
+            number(self.error_ms, 'marker_calibration.error_ms', 0)
+        elif self.status != 'unverified' or self.offset_ms is not None or self.error_ms is not None:
+            raise ConfigError('unverified marker calibration cannot supply assumed corrections')
+
+
+@dataclass(frozen=True)
+class BeatAnchor:
+    id: str
+    beat: Fraction
+    timestamp_ms: float
+    error_ms: float
+    status: str
+    version: str
+
+    def __post_init__(self):
+        string(self.id, 'beat_anchor.id')
+        string(self.version, 'beat_anchor.version')
+        if not isinstance(self.beat, Fraction):
+            raise ConfigError('beat anchor requires a reduced fraction')
+        number(self.timestamp_ms, 'beat_anchor.timestamp_ms')
+        number(self.error_ms, 'beat_anchor.error_ms', 0)
+        if self.status not in ('verified', 'unverified'):
+            raise ConfigError('invalid beat anchor status')
+
+    def snapshot(self):
+        return {**asdict(self), 'beat': ratio(self.beat)}
+
+
+def validate_reference_inputs(calibrations, anchors):
+    meanings = {'beat_signal': 'integer_beat', 'barlines': 'measure_boundary'}
+    if not isinstance(calibrations, dict) or set(calibrations) - meanings.keys():
+        raise ConfigError('unknown marker calibration channel')
+    for channel, calibration in calibrations.items():
+        if not isinstance(calibration, MarkerCalibration) or calibration.meaning != meanings[channel]:
+            raise ConfigError('marker meaning does not match channel')
+    if not isinstance(anchors, (tuple, list)) or any(not isinstance(a, BeatAnchor) for a in anchors):
+        raise ConfigError('beat anchors must be a sequence of BeatAnchor values')
+    if len({a.id for a in anchors}) != len(anchors):
+        raise ConfigError('duplicate beat anchor ID')
+
+
+@dataclass(frozen=True)
 class SongConfig:
     source: Path
     video: Path
@@ -98,10 +153,13 @@ class SongConfig:
     beat_zero_ms: float | None = None
     measure_beats: Fraction | None = None
     judgment_calibration: JudgmentCalibration | None = None
+    marker_calibrations: dict[str, MarkerCalibration] = field(default_factory=dict)
+    beat_anchors: tuple[BeatAnchor, ...] = ()
 
     def snapshot(self):
         values = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
         values['measure_beats'] = ratio(self.measure_beats) if self.measure_beats is not None else None
+        values['beat_anchors'] = [a.snapshot() for a in self.beat_anchors]
         return values
 
 
@@ -257,7 +315,8 @@ def load_song(path: str | Path) -> SongConfig:
                  {"input", "metadata", "timing"})
     inp = table(data["input"], {"video", "profile", "start_ms", "end_ms"}, {"video", "profile"})
     meta = table(data["metadata"], {"title", "difficulty"}, {"title", "difficulty"})
-    timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "measure_beats", "judgment_calibration"}, {"mode", "bpm"})
+    timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "measure_beats", "judgment_calibration",
+                                     "marker_calibrations", "beat_anchors"}, {"mode", "bpm"})
     if timing["mode"] != "fixed":
         raise ConfigError("only explicitly supplied fixed BPM is implemented")
     decimal_bpm(timing["bpm"])
@@ -274,6 +333,21 @@ def load_song(path: str | Path) -> SongConfig:
     if 'judgment_calibration' in timing:
         value = table(timing['judgment_calibration'], {'status', 'version', 'offset_ms', 'error_ms'}, {'status', 'version'})
         judgment = JudgmentCalibration(**value)
+    calibrations = {}
+    for channel, value in table(timing.get('marker_calibrations', {}), {'beat_signal', 'barlines'}).items():
+        calibrations[channel] = MarkerCalibration(**table(value, MarkerCalibration.__dataclass_fields__,
+                                                          {'status', 'version', 'meaning'}))
+    anchors = []
+    if not isinstance(timing.get('beat_anchors', []), list):
+        raise ConfigError('timing.beat_anchors must be an array of tables')
+    for value in timing.get('beat_anchors', []):
+        value = dict(table(value, BeatAnchor.__dataclass_fields__, BeatAnchor.__dataclass_fields__))
+        try:
+            value['beat'] = read_ratio(value['beat'])
+        except ValueError as exc:
+            raise ConfigError(f'invalid beat anchor: {exc}') from exc
+        anchors.append(BeatAnchor(**value))
+    validate_reference_inputs(calibrations, anchors)
     video = (source.parent / string(inp["video"], "input.video")).resolve()
     profile_name = string(inp["profile"], "input.profile")
     # IDs are resolved in a profiles/ directory beside the song config.
@@ -293,7 +367,7 @@ def load_song(path: str | Path) -> SongConfig:
         settings = table(data["algorithm"], {"config"}, {"config"})
         algorithm = (source.parent / string(settings["config"], "algorithm.config")).resolve()
     return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm,
-                      origin, measure, judgment)
+                      origin, measure, judgment, calibrations, tuple(anchors))
 
 
 def load_algorithm(path: Path | None) -> AlgorithmConfig:

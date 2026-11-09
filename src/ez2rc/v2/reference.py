@@ -17,7 +17,7 @@ from .timing import ScrollTimeMap
 VERSION = 'visual-reference-candidates-1'
 
 
-def phase_candidates(markers, period):
+def phase_candidates(markers, period, *, exact=False):
     """Intersect closed source windows modulo a supplied period.
 
     Maximal compatible evidence sets survive without majority selection. Two
@@ -75,12 +75,17 @@ def phase_candidates(markers, period):
                 spans[-1][1], spans[-1][3] = b, inc_b
             else:
                 spans.append([a, b, inc_a, inc_b])
-        hypotheses.append({
+        hypothesis = {
             'support_ids': sorted(support), 'conflicting_ids': sorted(set(windows) - support),
             'phase_intervals_ms': [{'lower': float(a), 'upper': float(b),
                                     'lower_inclusive': ia, 'upper_inclusive': ib} for a, b, ia, ib in spans],
             'distinct_cycles_min': min(cycles), 'distinct_cycles_max': max(cycles),
-            'status': 'recurring' if min(cycles) >= 2 else 'insufficient_recurrence'})
+            'status': 'recurring' if min(cycles) >= 2 else 'insufficient_recurrence'}
+        if exact:
+            hypothesis['phase_intervals_ms_exact'] = [
+                {'lower': ratio(a), 'upper': ratio(b), 'lower_inclusive': ia, 'upper_inclusive': ib}
+                for a, b, ia, ib in spans]
+        hypotheses.append(hypothesis)
     hypotheses.sort(key=lambda h: (h['phase_intervals_ms'][0]['lower'], h['support_ids']))
     recurring = any(h['status'] == 'recurring' for h in hypotheses)
     return {'period_ms': ratio(period),

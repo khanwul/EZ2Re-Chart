@@ -31,7 +31,7 @@ def chart_payload(chart: Chart) -> dict:
 
 def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_ref=None, fusion_ref=None,
                    decode_ref=None, time_projection_ref=None, timing_resolution_ref=None,
-                   reference_candidates_ref=None,
+                   reference_candidates_ref=None, reference_origin_link_ref=None,
                    pixel_intervals=(), pending_stages=(), candidates=()) -> dict:
     ids = [event.id for event in events]
     if len(ids) != len(set(ids)):
@@ -42,6 +42,7 @@ def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_re
             "decode_ref": decode_ref, "time_projection_ref": time_projection_ref,
             "timing_resolution_ref": timing_resolution_ref, "pixel_intervals": list(pixel_intervals),
             "reference_candidates_ref": reference_candidates_ref,
+            "reference_origin_link_ref": reference_origin_link_ref,
             "pending_stages": list(pending_stages), "candidates": list(candidates),
             "events": [asdict(e) for e in sorted(events, key=lambda e: e.id)]}
 
@@ -104,6 +105,7 @@ def read_chart(path: Path) -> dict:
 def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observation_ref: str,
                   candidates=(), motion_ref=None, fusion_ref=None, decode_ref=None,
                   time_projection_ref=None, timing_resolution_ref=None, reference_candidates_ref=None,
+                  reference_origin_link_ref=None,
                   pixel_intervals=(), diagnostics=None):
     event_ids = {e.id for e in events}
     if not {n.id for n in (*chart.notes, *chart.unresolved)} <= event_ids:
@@ -121,6 +123,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         events, observation_ref=observation_ref, motion_ref=motion_ref, fusion_ref=fusion_ref,
         decode_ref=decode_ref, time_projection_ref=time_projection_ref, timing_resolution_ref=timing_resolution_ref,
         reference_candidates_ref=reference_candidates_ref,
+        reference_origin_link_ref=reference_origin_link_ref,
         pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
     items = "".join(f"<li id='{escape(e.id, quote=True)}'>Lane {e.lane + 1}: "
@@ -150,7 +153,10 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                    f"Resolved notes: {len(chart.notes)}; unresolved events: {len(chart.unresolved)}.</p>")
     if reference_candidates_ref:
         visual += (f"<p><a href='{escape(reference_candidates_ref, quote=True)}'>Visual musical-reference candidates</a>. "
-                   "Cyclic phases do not establish beat zero; marker meaning and clock offsets remain unverified.</p>")
+                   "Raw cyclic phases require separate marker calibration and an absolute reference.</p>")
+    if reference_origin_link_ref:
+        visual += (f"<p><a href='{escape(reference_origin_link_ref, quote=True)}'>Marker calibration and absolute-anchor comparisons</a>. "
+                   "Inspect compatible and conflicting origins; these diagnostics do not change timing decisions.</p>")
     pixel_table = ("<table><caption>Relative pixel intervals; costs cover the whole lane</caption>"
                    "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th>"
                    "<th>Review causes in competing hypotheses</th></tr>"

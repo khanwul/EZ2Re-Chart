@@ -23,6 +23,7 @@ from .decode import infer, output_events
 from .storage import Cache, digest, file_hash, safe_component, write_json
 from .timing import PROJECTION_VERSION, RESOLUTION_VERSION, project_video_times, resolve_pixel_timing
 from .reference import VERSION as REFERENCE_VERSION, reference_candidates
+from .reference_link import VERSION as REFERENCE_LINK_VERSION, link_reference_origin
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
 
@@ -144,8 +145,15 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         projection_ref = "artifacts/time-projection.json"
         write_json(root / projection_ref, projection)
         reference_ref = "artifacts/reference-candidates.json"
-        write_json(root / reference_ref, reference_candidates(
-            observations, motion, song.bpm, beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats))
+        references = reference_candidates(
+            observations, motion, song.bpm, beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats)
+        write_json(root / reference_ref, references)
+        reference_link_ref = 'artifacts/reference-origin-link.json'
+        linked = link_reference_origin(references, marker_calibrations=song.marker_calibrations,
+                                       beat_anchors=song.beat_anchors)
+        linked['reference_candidates_ref'] = reference_ref
+        linked['reference_candidates_sha256'] = file_hash(root / reference_ref)
+        write_json(root / reference_link_ref, linked)
         profile_data = meta["profile"]
         events, pixel_intervals = output_events(decoded)
         chart, events, resolution = resolve_pixel_timing(
@@ -161,6 +169,8 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                     "projection_version": PROJECTION_VERSION,
                                     "reference_candidates_ref": reference_ref,
                                     "reference_candidates_version": REFERENCE_VERSION,
+                                    "reference_origin_link_ref": reference_link_ref,
+                                    "reference_origin_link_version": REFERENCE_LINK_VERSION,
                                     "artifact_ref": resolution_ref, "resolved_notes": len(chart.notes),
                                     "unresolved_events": len(chart.unresolved)}
         active = "export"
@@ -171,6 +181,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                       decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,
                       time_projection_ref=projection_ref, timing_resolution_ref=resolution_ref,
                       reference_candidates_ref=reference_ref,
+                      reference_origin_link_ref=reference_link_ref,
                       candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
                                    "decode": decoded.manifest["metadata"]["event_status_counts"],
