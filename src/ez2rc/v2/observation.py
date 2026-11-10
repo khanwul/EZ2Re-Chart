@@ -192,6 +192,8 @@ def cache_keys(song, profile, algo, video_hash):
         "timestamp_policy": algo.timestamp_policy, **decoder_parameters()})
     observation = stage_key("observation", VERSION, {
         "profile": profile.snapshot, "asset_sha256": profile.asset_hashes,
+        "template_shapes": [{kind: list(lane.templates[kind].shape[:2]) for kind in KINDS}
+                            for lane in profile.lanes],
         "algorithm": algo.observation_parameters(), "opencv_version": cv2.__version__,
         "numpy_version": np.__version__,
     }, (digest(capture),))
@@ -283,6 +285,30 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
     return capture_cache, observations, False
 
 
+def template_shapes(parameters):
+    """Optional geometry in observation identity; legacy caches stay usable.
+
+    Shapes come from the same decoded assets used for matching. Keeping them
+    in the cache key allows reconstruction without reopening template images.
+    """
+    shapes = parameters.get('template_shapes')
+    if shapes is None:
+        return None
+    lanes = parameters['profile']['lanes']
+    if not isinstance(shapes, list) or len(shapes) != len(lanes):
+        raise CacheError('invalid template geometry lane count')
+    for shape, lane in zip(shapes, lanes):
+        if not isinstance(shape, dict) or set(shape) != set(KINDS):
+            raise CacheError('invalid template geometry kinds')
+        left, top, right, bottom = lane['match_roi']
+        for size in shape.values():
+            if (not isinstance(size, list) or len(size) != 2
+                    or any(type(v) is not int or v <= 0 for v in size)
+                    or size[0] > bottom - top or size[1] > right - left):
+                raise CacheError('invalid template geometry dimensions')
+    return shapes
+
+
 def _open_observations(path: Path) -> Cache:
     cache = Cache(path)
     key = cache.manifest["key"]
@@ -293,6 +319,7 @@ def _open_observations(path: Path) -> Cache:
     metadata = cache.manifest["metadata"]
     if metadata['profile'] != key['parameters']['profile']:
         raise CacheError('observation profile differs from cache key')
+    template_shapes(key['parameters'])
     expected = position_error_metadata(metadata['profile'])
     fields = ('position_calibration', 'position_error_px', 'position_error_reason')
     if canonical({k: metadata.get(k) for k in fields}) != canonical({k: expected.get(k) for k in fields}):

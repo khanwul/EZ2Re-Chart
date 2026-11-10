@@ -19,9 +19,10 @@ import numpy as np
 from .config import DecodeConfig, read_position_calibration
 from .contracts import Event
 from .motion import STATUS, timeline
+from .observation import template_shapes
 from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
 
-VERSION = "lane-interval-dp-3"
+VERSION = "lane-interval-dp-4"
 KINDS = ("tap", "head", "tail")
 
 
@@ -111,7 +112,7 @@ class BodyEvidence:
     Brightness and observation support remain separate: a bright cell with
     little usable weight is neither sustained evidence nor observed darkness.
     """
-    def __init__(self, cells, grid, config, clock=None):
+    def __init__(self, cells, grid, config, clock=None, endpoint_footprints=None):
         self.grid, self.config = grid, config
         self.q = cells['index'][:, 1].astype(float) * grid
         self.errors = cells.get('error_px', np.zeros((len(self.q), 4)))[:, 3]
@@ -131,6 +132,17 @@ class BodyEvidence:
         supported = bright * np.minimum(1., visible / config.support_weight)
         self.values = np.column_stack((bright, dark, trust, supported))
         self.prefix = np.vstack((np.zeros(4), np.cumsum(self.values * grid, axis=0)))
+        self.endpoint_footprints = union_ranges(endpoint_footprints) if endpoint_footprints is not None else None
+        # Integrate only the supported brightness shared with endpoint patches.
+        # Darkness, coverage and raw run boundaries retain their original meaning.
+        segments = []
+        for a, b in self.endpoint_footprints or ():
+            first = int(np.searchsorted(self.q, a - grid, side='right'))
+            last = int(np.searchsorted(self.q, b, side='left'))
+            segments.extend((max(a, q), min(b, q + grid), supported[i])
+                            for i in range(first, last) if (q := self.q[i]) + grid > a and q < b)
+        self.overlap = np.array(segments, dtype=float).reshape(-1, 3)
+        self.overlap_prefix = np.r_[0., np.cumsum((self.overlap[:, 1] - self.overlap[:, 0]) * self.overlap[:, 2])]
         # Contiguous support may pass through unobservable cells, but observed
         # darkness ends a missing-endpoint hypothesis. No tile edge is consulted.
         strong = bright > .5
@@ -170,7 +182,7 @@ class BodyEvidence:
             (self.ambiguous_frames >= first) & (self.ambiguous_frames <= last))))
         scale = max(length, self.grid, self.config.body_support_px)
         support, supported_fraction = bright / scale, supported / scale
-        return {'range_px': [float(start), float(end)], 'bright_px': bright,
+        result = {'range_px': [float(start), float(end)], 'bright_px': bright,
                 'supported_bright_px': supported, 'supported_fraction': supported_fraction,
                 'absent_px': max(0., float(dark)), 'unavailable_px': unavailable,
                 'support_fraction': support, 'support_scale_px': scale,
@@ -181,6 +193,15 @@ class BodyEvidence:
                               - self.config.body_reward * supported_fraction),
                 'evidence_ref': {'kind': 'body', 'bin_start': int(np.floor(start / self.grid)),
                                  'bin_end_exclusive': int(np.ceil(end / self.grid))}}
+        if self.endpoint_footprints is not None:
+            def integral(x):
+                j = int(np.searchsorted(self.overlap[:, 0], x, side='right'))
+                total = self.overlap_prefix[j]
+                if j and x < self.overlap[j - 1, 1]:
+                    total -= self.overlap[j - 1, 2] * (self.overlap[j - 1, 1] - x)
+                return total
+            result['endpoint_overlap_supported_px'] = float(np.clip(integral(end) - integral(start), 0., supported))
+        return result
 
     def extent(self, q, direction, radius):
         possible = [(a, b) for a, b in self.runs if a - radius <= q <= b + radius]
@@ -338,10 +359,61 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
     return sites, endpoints
 
 
+def union_ranges(intervals):
+    """Union without double counting touching or overlapping pixel intervals."""
+    merged = []
+    for a, b in sorted(intervals):
+        if a >= b:
+            continue
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([float(a), float(b)])
+    return merged
+
+
+def endpoint_footprints(endpoints, ledger, flags, heights, offsets):
+    """The template area shared by all usable observations of an endpoint.
+
+    q runs opposite to screen y. Restore the detection reference offset before
+    projecting the downward template rectangle. Unknown or incompatible
+    geometry gives no mask; it does not manufacture observed absence.
+    """
+    lookup = {f'f{int(f)}:l{int(l)}:y{int(y)}': i
+              for i, (f, l, y) in enumerate(ledger['endpoint_index'])}
+    for endpoint in endpoints:
+        k = KINDS.index(endpoint['kind'])
+        rows = [lookup[ref] for ref in endpoint['observation_ids']]
+        usable = [i for i in rows if flags[i, k] & 11 == 0 and ledger['endpoint_weight'][i, k] > 0]
+        endpoint['template_footprint_px'] = None
+        if usable and heights[k] is not None:
+            tops = ledger['endpoint_q'][usable, k] + offsets[k]
+            lower, upper = float(tops.max() - heights[k]), float(tops.min())
+            if lower < upper:
+                endpoint['template_footprint_px'] = [lower, upper]
+
+
+def shared_body_footprints(sites, endpoints, config):
+    """Candidate-independent overlap, common to supported site interpretations."""
+    by_id = {e['id']: e for e in endpoints}
+    ranges = []
+    for site in sites:
+        eligible = [by_id[e] for e in site['endpoint_ids'] if by_id[e]['q_px'] is not None
+                    and by_id[e]['score'] >= config.association_similarity
+                    and by_id[e]['weight'] >= config.support_weight]
+        if not eligible or any(e.get('template_footprint_px') is None for e in eligible):
+            continue
+        lower = max(e['template_footprint_px'][0] for e in eligible)
+        upper = min(e['template_footprint_px'][1] for e in eligible)
+        if lower < upper:
+            ranges.append([lower, upper])
+    return union_ranges(ranges)
+
+
 def interval_cost(endpoints, missing, body, config):
     """Auditable additive costs; neither similarities nor costs are probabilities."""
     reward = config.body_reward if endpoints else config.body_only_reward
-    return {'note': config.note_cost,
+    terms = {'note': config.note_cost,
             'endpoint_support': -config.endpoint_reward * sum(e['utility'] for e in endpoints),
             'additional_endpoint': config.additional_endpoint_cost * max(0, len(endpoints) - 1),
             'missing_endpoint': config.missing_endpoint_cost * missing,
@@ -349,6 +421,9 @@ def interval_cost(endpoints, missing, body, config):
             'body_support_shortfall': reward * (body['support_fraction'] - body['supported_fraction']) if body else 0.,
             'body_absence': config.absence_cost_per_px * body['absent_px'] if body else 0.,
             'body_unavailable': config.unavailable_cost_per_px * body['unavailable_px'] if body else 0.}
+    if body is not None and 'endpoint_overlap_supported_px' in body:
+        terms['endpoint_body_overlap'] = reward * body['endpoint_overlap_supported_px'] / body['support_scale_px']
+    return terms
 
 
 def interval_candidates(lane, sites, endpoints, body, config):
@@ -511,6 +586,7 @@ def summarize_lane(lane, sites, endpoints, body, config):
     best = ordered_dp(len(tokens), candidates, config.ambiguity_cost)
     events = review_events(lane, candidates, endpoints, config, best)
     return {'format': 'ez2rc.decode-lane', 'schema_version': 1, 'lane': lane,
+            **({'shared_body_footprints_px': body.endpoint_footprints} if body.endpoint_footprints is not None else {}),
             'sites': sites, 'endpoints': endpoints, 'candidates': candidates, 'events': events,
             'best_cost': best, 'token_count': len(tokens), 'noise_dominated_pair_count': omitted,
             'boundary': {'finalized': True, 'open_candidate_ids': [c['id'] for c in candidates if c['missing_endpoints']],
@@ -552,7 +628,16 @@ def _lane_input(observations, fusion, lane):
 def _infer_lane(observations, fusion, lane, clock, meta, config):
     ledger, scores, flags, cells = _lane_input(observations, fusion, lane)
     sites, endpoints = endpoint_sites(lane, ledger, scores, flags, clock, meta, config)
-    return summarize_lane(lane, sites, endpoints, BodyEvidence(cells, meta['grid_px'], config, clock), config)
+    shapes = template_shapes(observations.manifest['key']['parameters'])
+    footprints = None
+    if shapes is not None:
+        heights = [shapes[lane][kind][0] for kind in KINDS]
+        offsets = [meta['calibration'][kind].get('offset_px', 0.)
+                   if meta['calibration'][kind]['status'] == 'verified' else 0. for kind in KINDS]
+        endpoint_footprints(endpoints, ledger, flags, heights, offsets)
+        footprints = shared_body_footprints(sites, endpoints, config)
+    return summarize_lane(lane, sites, endpoints,
+                          BodyEvidence(cells, meta['grid_px'], config, clock, footprints), config)
 
 
 def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfig, root: Path):
@@ -593,6 +678,9 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
                               'grid_px': meta['grid_px'],
                               'coordinate': 'relative scroll pixels; never milliseconds or beats',
                               'cost_semantics': 'heuristic additive costs, not probabilities',
+                              'body_overlap_policy': ('shared_supported_template_footprints'
+                                  if template_shapes(observations.manifest['key']['parameters']) is not None
+                                  else 'unavailable_template_geometry'),
                               'motion_policy': 'representative fusion trajectory; original alternatives in motion parent',
                               'boundary_policy': 'lane-wide retained evidence; storage edges never create endpoints',
                               'timing_status': 'pending'}, validate=open_decode), False
@@ -633,6 +721,14 @@ def _validate_lane(lane, data, config, grid):
         if e['site_id'] not in memberships:
             raise CacheError('dangling endpoint site')
         memberships[e['site_id']].add(e['id'])
+        if 'shared_body_footprints_px' in data:
+            span = e['template_footprint_px']
+            if span is not None and (not isinstance(span, list) or len(span) != 2
+                    or not all(type(v) in (int, float) and math.isfinite(v) for v in span) or span[0] >= span[1]):
+                raise CacheError('invalid endpoint template footprint')
+    if ('shared_body_footprints_px' in data
+            and data['shared_body_footprints_px'] != shared_body_footprints(data['sites'], data['endpoints'], config)):
+        raise CacheError('invalid shared body footprints')
     for s in sites.values():
         if (not s['endpoint_ids'] or len(set(s['endpoint_ids'])) != len(s['endpoint_ids'])
                 or set(s['endpoint_ids']) != memberships[s['id']]
@@ -673,7 +769,15 @@ def _validate_lane(lane, data, config, grid):
         if (c['body'] is None) != (c['type'] == 'tap'):
             raise CacheError('invalid interval body evidence')
         if c['body'] is not None:
+            if ('endpoint_overlap_supported_px' in c['body']) != ('shared_body_footprints_px' in data):
+                raise CacheError('inconsistent body overlap policy')
             _validate_body(c['body'], config, grid)
+            if 'shared_body_footprints_px' in data:
+                a, b = c['body']['range_px']
+                masked_length = sum(max(0., min(b, hi) - max(a, lo))
+                                    for lo, hi in data['shared_body_footprints_px'])
+                if c['body']['endpoint_overlap_supported_px'] > masked_length + 1e-8:
+                    raise CacheError('body overlap exceeds shared footprint coverage')
         terms = interval_cost([eps[e] for e in (c['start'], c['end']) if e],
                               c['missing_endpoints'], c['body'], config)
         if c['cost_terms'] != terms or c['cost'] != math.fsum(terms.values()):
@@ -709,6 +813,10 @@ def _validate_body(body, config, grid):
     start, end = body['range_px']
     length = end - start
     bright, supported = body['bright_px'], body['supported_bright_px']
+    if 'endpoint_overlap_supported_px' in body:
+        overlap = body['endpoint_overlap_supported_px']
+        if not math.isfinite(overlap) or not 0 <= overlap <= supported:
+            raise CacheError('invalid endpoint body overlap')
     dark, unavailable, scale = body['absent_px'], body['unavailable_px'], body['support_scale_px']
     values = (start, end, bright, supported, dark, unavailable, scale,
               body['support_fraction'], body['supported_fraction'], body['cost'])
@@ -739,6 +847,10 @@ def open_decode(path, expected_key=None):
             if not math.isfinite(grid) or grid <= 0:
                 raise CacheError('invalid decode grid')
             payload = _lane_payload(chunk)
+            policy = meta.get('body_overlap_policy')
+            if (policy not in ('shared_supported_template_footprints', 'unavailable_template_geometry')
+                    or ('shared_body_footprints_px' in payload) != (policy == 'shared_supported_template_footprints')):
+                raise CacheError('decode body overlap policy differs from its lane evidence')
             if 'position_calibration' in meta:
                 declared = read_position_calibration(meta['position_calibration'])
                 if any(canonical(e['localization_error_px']) != canonical(declared.error_px) for e in payload['endpoints']):
