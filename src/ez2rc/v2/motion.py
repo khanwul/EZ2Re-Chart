@@ -14,7 +14,7 @@ import numpy as np
 from .config import MotionConfig
 from .storage import Cache, CacheError, CacheWriter, digest, stage_key
 
-VERSION = "common-scroll-4"
+VERSION = "common-scroll-5"
 STATUS = {"origin": 0, "observed": 1, "single_lane": 2, "ambiguous": 3,
           "extrapolated": 4, "unresolved": 5, "repeated": 6}
 
@@ -167,6 +167,26 @@ def _consistent_paths(models, path, frame_id, config, checks):
     return retained
 
 
+def _forecast_rate(history, fallback):
+    """Nominal rate from the latest uninterrupted observed displacement path.
+
+    Pairwise slopes avoid giving the final rendered step a special weight.
+    They share observations and supply no new confidence or motion evidence.
+    Use the trajectory prediction when too little observed support is available.
+    """
+    points = []
+    segment = history[-1]['path'][0]
+    for frame in reversed(history):
+        if (frame['path'][0] != segment
+                or frame['row']['status'] not in (STATUS['origin'], STATUS['observed'])):
+            break
+        points.append((frame['ms'], frame['row']['scroll_px']))
+    points.reverse()
+    rates = [(bq-aq)/(bt-at) for i, (at, aq) in enumerate(points)
+             for bt, bq in points[i+1:] if bt > at]
+    return float(np.median(rates)) if rates else fallback
+
+
 def estimate(observations: Cache, config: MotionConfig, root: Path):
     key = cache_key(observations, config)
     try:
@@ -179,6 +199,9 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
     history = deque(maxlen=config.history_frames)
     rows, links, alternatives, path_checks = [], [], [], []
     velocity = None
+    # Forecasting through missing evidence must not give the last rendered
+    # step special weight. Keep observed-mode selection's predictor separate.
+    forecast_rate = None
     previous = None
     repeat_edges = []
     for frame in frames(observations):
@@ -258,7 +281,7 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
                 row.update(scroll_px=last["scroll_px"], error_px=last["error_px"],
                            status=STATUS["unresolved"], reference_frame=previous["id"])
             else:
-                delta = (velocity or 0) * dt
+                delta = (forecast_rate or 0) * dt
                 error = config.max_speed_px_per_ms * dt + config.displacement_slack_px
                 row.update(scroll_px=last["scroll_px"] + delta, error_px=last["error_px"] + error,
                            step_error_px=error, status=STATUS["extrapolated" if velocity is not None else "unresolved"])
@@ -271,6 +294,8 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
             # The display may be held for arbitrarily many PTS intervals. Its
             # last visible instance is still a current geometric anchor.
             history[-1] = frame
+        if row['status'] == STATUS['observed']:
+            forecast_rate = _forecast_rate(history, velocity)
         previous = frame
     if not rows:
         raise ValueError("motion requires observations")
@@ -312,6 +337,7 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
                 "path_checked_models": len(path_array),
                 "path_rejected_models": int(np.count_nonzero(path_array[:, 7] == 0)),
                 "path_policy": "older direct-match intervals must overlap the sum of unique multi-lane adjacent-match intervals; uncertain or repeated steps break the path; all checked models remain in path_checks",
+                "extrapolation_policy": "median pairwise rate on the latest uninterrupted observed path; prediction fallback with insufficient support; uncertainty retained",
                 "repeat_policy": "near/exact image agreement plus zero landmark motion and adjacent moving multi-lane support",
                 "status_counts": {name: sum(r["status"] == code for r in rows) for name, code in STATUS.items()},
                 "confirmed_repeat_frames": sum(r["repeat_confirmed"] for r in rows),
