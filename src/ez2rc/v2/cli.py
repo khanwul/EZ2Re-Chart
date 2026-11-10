@@ -26,7 +26,7 @@ def main(argv=None):
         code, root = execute(args.config, output_root=args.output,
                              cache_root=getattr(args, "cache_root", None),
                              observation_cache=getattr(args, "observations", None))
-        run = read_json(root / "run.json", "ez2rc.run")
+        run = read_json(root / "run.json", "ez2rc.run", schema_versions=(1, 2))
         print(f"{run['status']}: {root}")
         if run["failure"]:
             print(f"error [{run['failure']['stage']}]: {run['failure']['message']}", file=sys.stderr)

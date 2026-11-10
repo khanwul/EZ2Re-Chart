@@ -40,6 +40,44 @@ def read_ratio(value: list[int]) -> Fraction:
     return Fraction(*value)
 
 
+def exact_ms(value) -> Fraction:
+    """Interpret numeric milliseconds as decimal, retaining rational inputs."""
+    if isinstance(value, Fraction):
+        return value
+    if not finite_number(value):
+        raise ValueError('invalid exact millisecond value')
+    return Fraction(str(value))
+
+
+def origin_schema(value) -> int:
+    return 2 if isinstance(value, Fraction) else 1
+
+
+def origin_payload(value, key='beat_zero_ms') -> dict:
+    """Schema 2 separates an exact pair from an unresolved numeric field."""
+    if value is not None:
+        exact_ms(value)
+    if isinstance(value, Fraction):
+        return {key: None, key + '_exact': ratio(value)}
+    return {key: value}
+
+
+def read_origin(value, schema_version, key='beat_zero_ms'):
+    """Reject ambiguous dual representations and schema downgrades."""
+    if type(schema_version) is not int or schema_version not in (1, 2):
+        raise ValueError('unsupported origin schema')
+    numeric = value[key]
+    if key + '_exact' in value:
+        if schema_version != 2 or numeric is not None:
+            raise ValueError('exact origin requires schema 2 and a null numeric origin')
+        return read_ratio(value[key + '_exact'])
+    if numeric is not None:
+        if type(numeric) not in (int, float):
+            raise ValueError('numeric origin must be a number or null')
+        exact_ms(numeric)
+    return numeric
+
+
 @dataclass(frozen=True)
 class TimeInterval:
     lower_ms: float
@@ -135,15 +173,15 @@ class Metadata:
 @dataclass(frozen=True)
 class Timing:
     bpm: str
-    beat_zero_ms: float | None = None
+    beat_zero_ms: float | Fraction | None = None
     measure_beats: Fraction | None = None
     status: Literal["resolved", "unresolved"] = "unresolved"
     reason: str | None = "beat origin and meter have not been determined"
 
     def __post_init__(self):
         decimal_bpm(self.bpm)
-        if self.beat_zero_ms is not None and not finite_number(self.beat_zero_ms):
-            raise ValueError("invalid beat origin")
+        if self.beat_zero_ms is not None:
+            exact_ms(self.beat_zero_ms)
         if self.measure_beats is not None and (
                 not isinstance(self.measure_beats, Fraction) or self.measure_beats <= 0):
             raise ValueError("invalid measure length")

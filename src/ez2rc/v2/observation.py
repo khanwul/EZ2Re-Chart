@@ -9,11 +9,22 @@ import cv2
 import numpy as np
 
 from .capture import VideoReader, VERSION as CAPTURE_VERSION, decoder_parameters, validate_timeline
-from .config import AlgorithmConfig, Profile, SongConfig
-from .storage import Cache, CacheError, CacheWriter, digest, file_hash, stage_key
+from .config import AlgorithmConfig, Profile, SongConfig, read_position_calibration
+from .storage import Cache, CacheError, CacheWriter, canonical, digest, file_hash, stage_key
 
 VERSION = "visual-observations-3"
 KINDS = ("tap", "head", "tail")
+
+
+def position_error_metadata(profile):
+    result = {'position_error_px': None, 'position_error_reason': 'not independently calibrated'}
+    if 'position_calibration' in profile:
+        declaration = read_position_calibration(profile['position_calibration'])
+        result['position_calibration'] = declaration.snapshot()
+        if declaration.status == 'verified':
+            result.update(position_error_px=declaration.error_px,
+                          position_error_reason='caller-declared profile endpoint localization bound')
+    return result
 
 
 def channel(bgr, name):
@@ -260,7 +271,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
             "repeat_policy": "provisional exact lane-image equality; motion confirmation pending",
             "score_columns": ["tap_similarity", "head_similarity", "tail_similarity", "body_brightness_fraction"],
             "position_kinds": list(KINDS), "position_unit": "aligned pixels, template top-left",
-            "position_error_px": None, "position_error_reason": "not independently calibrated",
+            **position_error_metadata(profile.snapshot),
             "candidate_id": "f{frame_id}:l{lane}:y{seed_row}",
             "flag_bits": {"clipped": 1, "judgment_effect": 2, "occlusion_unknown": 4},
             "clipping_policy": "template touches viewport edge, or top-truncated seed search "
@@ -280,6 +291,12 @@ def _open_observations(path: Path) -> Cache:
     previous_id, previous_ms = -1, -1.0
     count = 0
     metadata = cache.manifest["metadata"]
+    if metadata['profile'] != key['parameters']['profile']:
+        raise CacheError('observation profile differs from cache key')
+    expected = position_error_metadata(metadata['profile'])
+    fields = ('position_calibration', 'position_error_px', 'position_error_reason')
+    if canonical({k: metadata.get(k) for k in fields}) != canonical({k: expected.get(k) for k in fields}):
+        raise CacheError('observation position calibration differs from declared profile')
     lane_count = len(metadata["profile"]["lanes"])
     roi = metadata["profile"]["lanes"][0]["roi"]
     height = roi[3] - roi[1]

@@ -9,7 +9,7 @@ from fractions import Fraction
 import math
 
 from .config import validate_reference_inputs
-from .contracts import Timing, decimal_bpm, ratio, read_ratio
+from .contracts import Timing, decimal_bpm, exact_ms, origin_schema, ratio, read_origin, read_ratio
 from .reference import VERSION as CANDIDATE_VERSION, phase_candidates
 
 VERSION = 'anchored-reference-link-1'
@@ -49,11 +49,12 @@ def link_reference_origin(candidates, *, marker_calibrations=None, beat_anchors=
     calibrations = {} if marker_calibrations is None else marker_calibrations
     validate_reference_inputs(calibrations, beat_anchors)
     if (candidates['format'] != 'ez2rc.reference-candidates'
-            or candidates['schema_version'] != 1 or candidates['algorithm_version'] != CANDIDATE_VERSION):
+            or candidates['algorithm_version'] != CANDIDATE_VERSION):
         raise ValueError('unsupported reference candidates')
     supplied = candidates['supplied_reference']
+    supplied_origin = read_origin(supplied, candidates['schema_version'])
     measure = read_ratio(supplied['measure_beats']) if supplied['measure_beats'] is not None else None
-    Timing(supplied['bpm'], supplied['beat_zero_ms'], measure)
+    Timing(supplied['bpm'], supplied_origin, measure)
     period = 60000 / decimal_bpm(supplied['bpm'])
     anchors, references, intervals = [], [], []
     for anchor in beat_anchors:
@@ -78,8 +79,8 @@ def link_reference_origin(candidates, *, marker_calibrations=None, beat_anchors=
         row['conflicting_anchor_ids'] = [aid for aid, span in intervals
                                         if interval is not None and max(interval[0], span[0]) > min(interval[1], span[1])]
     supplied_checks = []
-    if supplied['beat_zero_ms'] is not None:
-        zero = _fraction(supplied['beat_zero_ms'])
+    if supplied_origin is not None:
+        zero = exact_ms(supplied_origin)
         references.insert(0, ({'kind': 'supplied_origin'}, (zero, zero)))
         supplied_checks = [{'anchor_id': aid, 'status': 'compatible' if lo <= zero <= hi else 'conflict'}
                            for aid, (lo, hi) in intervals]
@@ -129,7 +130,7 @@ def link_reference_origin(candidates, *, marker_calibrations=None, beat_anchors=
                 result['reasons'].append('insufficient_recurrence')
         channels[channel] = result
     return {
-        'format': 'ez2rc.reference-origin-link', 'schema_version': 1, 'algorithm_version': VERSION,
+        'format': 'ez2rc.reference-origin-link', 'schema_version': origin_schema(supplied_origin), 'algorithm_version': VERSION,
         'status': 'diagnostic', 'candidate_version': CANDIDATE_VERSION,
         'observation_cache_id': candidates['observation_cache_id'], 'motion_cache_id': candidates['motion_cache_id'],
         'supplied_reference': dict(supplied), 'inferred_beat_zero_ms': None, 'inferred_measure_beats': None,

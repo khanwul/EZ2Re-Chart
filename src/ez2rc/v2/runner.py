@@ -14,7 +14,7 @@ import uuid
 from . import __version__
 from .capture import CaptureError, VERSION as CAPTURE_VERSION, validate_timeline
 from .config import load_algorithm, load_profile, load_song
-from .contracts import Metadata, STAGES
+from .contracts import Metadata, STAGES, origin_schema, read_origin
 from .export import write_outputs
 from .observation import collect, open_observations
 from .motion import estimate
@@ -24,6 +24,9 @@ from .storage import Cache, digest, file_hash, safe_component, write_json
 from .timing import PROJECTION_VERSION, RESOLUTION_VERSION, project_video_times, resolve_pixel_timing
 from .reference import VERSION as REFERENCE_VERSION, reference_candidates
 from .reference_link import VERSION as REFERENCE_LINK_VERSION, link_reference_origin
+from .origin import VERSION as ORIGIN_VERSION, adopt_reference_origin
+from .beat_ranges import project_beat_ranges
+from .endpoint_ranges import VERSION as ENDPOINT_RANGES_VERSION, project_endpoint_time_ranges
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
 
@@ -57,7 +60,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
     root = output_root / safe_component(song.title) / safe_component(song.difficulty) / run_id
     root.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
-    run = {"format": "ez2rc.run", "schema_version": 1, "run_id": run_id, "status": "running",
+    run = {"format": "ez2rc.run", "schema_version": origin_schema(song.beat_zero_ms), "run_id": run_id, "status": "running",
            "command": "reconstruct" if observation_cache is not None else "extract",
            "code": code_identity(), "settings": song.snapshot(), "algorithm": None,
            "input": {}, "stages": {s: {"status": "pending"} for s in STAGES},
@@ -144,6 +147,12 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         projection = project_video_times(observations, motion, decoded)
         projection_ref = "artifacts/time-projection.json"
         write_json(root / projection_ref, projection)
+        endpoint_ranges_ref = 'artifacts/endpoint-time-ranges.json'
+        endpoint_ranges = project_endpoint_time_ranges(observations, motion, projection)
+        endpoint_ranges.update(time_projection_ref=projection_ref, time_projection_sha256=file_hash(root / projection_ref),
+                               motion_ref='artifacts/motion/manifest.json',
+                               motion_sha256=file_hash(root / 'artifacts/motion/manifest.json'))
+        write_json(root / endpoint_ranges_ref, endpoint_ranges)
         reference_ref = "artifacts/reference-candidates.json"
         references = reference_candidates(
             observations, motion, song.bpm, beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats)
@@ -154,23 +163,52 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         linked['reference_candidates_ref'] = reference_ref
         linked['reference_candidates_sha256'] = file_hash(root / reference_ref)
         write_json(root / reference_link_ref, linked)
+        adoption_ref = 'artifacts/origin-adoption.json'
+        adoption = adopt_reference_origin(linked, song.origin_adoption)
+        adoption['reference_origin_link_ref'] = reference_link_ref
+        adoption['reference_origin_link_sha256'] = file_hash(root / reference_link_ref)
+        write_json(root / adoption_ref, adoption)
         profile_data = meta["profile"]
         events, pixel_intervals = output_events(decoded)
         chart, events, resolution = resolve_pixel_timing(
             events, pixel_intervals, projection,
             Metadata(profile_data["game"], profile_data["mode"], len(profile_data["lanes"]),
                      song.title, song.difficulty), song.bpm,
-            beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats,
+            beat_zero_ms=(None if adoption['status'] == 'bounded' else
+                          read_origin(adoption, adoption['schema_version'], 'effective_beat_zero_ms')),
+            measure_beats=song.measure_beats,
             judgment_calibration=song.judgment_calibration)
         resolution_ref = "artifacts/timing-resolution.json"
+        if song.origin_adoption is not None:
+            resolution['origin_adoption_ref'] = adoption_ref
+            resolution['origin_adoption_sha256'] = file_hash(root / adoption_ref)
+            resolution['origin_source'] = adoption['origin_source']
         write_json(root / resolution_ref, resolution)
+        ranges_ref = 'artifacts/beat-ranges.json'
+        endpoint_requested = song.range_uncertainty is not None and song.range_uncertainty.endpoint_component is not None
+        endpoint_inputs = {'endpoint_ranges': endpoint_ranges, 'pixels': pixel_intervals,
+                           'projection': projection} if endpoint_requested else {}
+        ranges = project_beat_ranges(events, resolution, adoption, uncertainty_model=song.range_uncertainty, **endpoint_inputs)
+        ranges.update(timing_resolution_ref=resolution_ref, timing_resolution_sha256=file_hash(root / resolution_ref),
+                      origin_adoption_ref=adoption_ref, origin_adoption_sha256=file_hash(root / adoption_ref))
+        if endpoint_requested:
+            ranges.update(endpoint_time_ranges_ref=endpoint_ranges_ref,
+                          endpoint_time_ranges_sha256=file_hash(root / endpoint_ranges_ref),
+                          time_projection_ref=projection_ref, time_projection_sha256=file_hash(root / projection_ref))
+        write_json(root / ranges_ref, ranges)
         run["stages"]["timing"] = {"status": "pending" if "timing" in chart.pending_stages else "complete",
                                     "algorithm_version": RESOLUTION_VERSION, "projection_ref": projection_ref,
                                     "projection_version": PROJECTION_VERSION,
+                                    "endpoint_time_ranges_ref": endpoint_ranges_ref,
+                                    "endpoint_time_ranges_version": ENDPOINT_RANGES_VERSION,
                                     "reference_candidates_ref": reference_ref,
                                     "reference_candidates_version": REFERENCE_VERSION,
                                     "reference_origin_link_ref": reference_link_ref,
                                     "reference_origin_link_version": REFERENCE_LINK_VERSION,
+                                    "origin_adoption_ref": adoption_ref, "origin_adoption_version": ORIGIN_VERSION,
+                                    "origin_adoption_status": adoption['status'],
+                                    "beat_ranges_ref": ranges_ref, "beat_ranges_version": ranges['algorithm_version'],
+                                    "bounded_events": ranges['bounded_event_count'],
                                     "artifact_ref": resolution_ref, "resolved_notes": len(chart.notes),
                                     "unresolved_events": len(chart.unresolved)}
         active = "export"
@@ -180,14 +218,18 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                       motion_ref="artifacts/motion/manifest.json", fusion_ref="artifacts/fusion/manifest.json",
                       decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,
                       time_projection_ref=projection_ref, timing_resolution_ref=resolution_ref,
+                      endpoint_time_ranges_ref=endpoint_ranges_ref,
                       reference_candidates_ref=reference_ref,
                       reference_origin_link_ref=reference_link_ref,
+                      origin_adoption_ref=adoption_ref,
+                      beat_ranges_ref=ranges_ref,
                       candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
                                    "decode": decoded.manifest["metadata"]["event_status_counts"],
+                                   "position_calibration": meta.get('position_calibration'),
                                    "endpoint_calibration": "unverified" if any(c["status"] != "verified" for c in profile_data["calibration"].values()) else "verified"})
         run["status"] = chart.status
-        run["stages"]["export"] = {"status": "complete", "schema_version": 1}
+        run["stages"]["export"] = {"status": "complete", "schema_version": origin_schema(chart.timing.beat_zero_ms)}
         result = EXIT_COMPLETE if chart.status == "complete" else EXIT_PARTIAL
     except (OSError, ValueError, RuntimeError) as exc:
         if isinstance(exc, CaptureError):

@@ -11,7 +11,7 @@ import tomllib
 import cv2
 import numpy as np
 
-from .contracts import decimal_bpm, ratio, read_ratio
+from .contracts import decimal_bpm, origin_payload, ratio, read_ratio
 from .storage import file_hash
 
 
@@ -140,6 +140,44 @@ def validate_reference_inputs(calibrations, anchors):
 
 
 @dataclass(frozen=True)
+class OriginAdoption:
+    policy: str
+    version: str
+
+    def __post_init__(self):
+        if self.policy not in ('exact_anchor_intersection', 'anchor_interval'):
+            raise ConfigError('unsupported origin adoption policy')
+        string(self.version, 'origin_adoption.version')
+
+
+@dataclass(frozen=True)
+class RangeUncertainty:
+    version: str
+    judgment_scope: str
+    origin_relation: str
+    origin_reference_ms: Fraction | None = None
+    endpoint_component: str | None = None
+
+    def __post_init__(self):
+        string(self.version, 'range_uncertainty.version')
+        if self.judgment_scope != 'shared_all_events':
+            raise ConfigError('judgment uncertainty requires an explicit shared_all_events scope')
+        if self.origin_relation == 'same_clock_shift':
+            if not isinstance(self.origin_reference_ms, Fraction):
+                raise ConfigError('same_clock_shift requires an exact origin reference')
+        elif self.origin_relation != 'unknown' or self.origin_reference_ms is not None:
+            raise ConfigError('unknown origin relation must not supply an origin reference')
+        if self.endpoint_component not in (None, 'calibration_and_localization'):
+            raise ConfigError('endpoint ranges require the complete calibration_and_localization component')
+
+    def snapshot(self):
+        return {'version': self.version, 'judgment_scope': self.judgment_scope,
+                'origin_relation': self.origin_relation,
+                'origin_reference_ms_exact': ratio(self.origin_reference_ms) if self.origin_reference_ms is not None else None,
+                **({'endpoint_component': self.endpoint_component} if self.endpoint_component is not None else {})}
+
+
+@dataclass(frozen=True)
 class SongConfig:
     source: Path
     video: Path
@@ -150,16 +188,20 @@ class SongConfig:
     start_ms: float = 0.0
     end_ms: float | None = None
     algorithm: Path | None = None
-    beat_zero_ms: float | None = None
+    beat_zero_ms: float | Fraction | None = None
     measure_beats: Fraction | None = None
     judgment_calibration: JudgmentCalibration | None = None
     marker_calibrations: dict[str, MarkerCalibration] = field(default_factory=dict)
     beat_anchors: tuple[BeatAnchor, ...] = ()
+    origin_adoption: OriginAdoption | None = None
+    range_uncertainty: RangeUncertainty | None = None
 
     def snapshot(self):
         values = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
+        values.update(origin_payload(self.beat_zero_ms))
         values['measure_beats'] = ratio(self.measure_beats) if self.measure_beats is not None else None
         values['beat_anchors'] = [a.snapshot() for a in self.beat_anchors]
+        values['range_uncertainty'] = self.range_uncertainty.snapshot() if self.range_uncertainty is not None else None
         return values
 
 
@@ -280,6 +322,35 @@ class Calibration:
     error_px: float | None = None
 
 
+@dataclass(frozen=True)
+class PositionCalibration:
+    """Caller-declared vertical localization bound for this recording profile."""
+    status: str
+    version: str
+    scope: str
+    error_px: float | None = None
+
+    def __post_init__(self):
+        string(self.version, 'position_calibration.version')
+        if self.scope != 'profile_endpoints':
+            raise ConfigError('position calibration scope must be profile_endpoints')
+        if self.status == 'verified':
+            number(self.error_px, 'position_calibration.error_px', 0)
+        elif self.status != 'unverified' or self.error_px is not None:
+            raise ConfigError('unverified position calibration cannot supply an error bound')
+
+    def snapshot(self):
+        return {'status': self.status, 'version': self.version, 'scope': self.scope,
+                **({'error_px': self.error_px} if self.error_px is not None else {})}
+
+
+def read_position_calibration(value):
+    value = table(value, {'status', 'version', 'scope', 'error_px'}, {'status', 'version', 'scope'})
+    if value['status'] == 'unverified' and 'error_px' in value:
+        raise ConfigError('unverified position calibration must omit error_px')
+    return PositionCalibration(**value)
+
+
 @dataclass
 class Lane:
     roi: tuple[int, int, int, int]
@@ -303,6 +374,7 @@ class Profile:
     lanes: list[Lane]
     snapshot: dict
     asset_hashes: dict[str, str]
+    position_calibration: PositionCalibration | None = None
 
     @property
     def lane_count(self):
@@ -315,12 +387,19 @@ def load_song(path: str | Path) -> SongConfig:
                  {"input", "metadata", "timing"})
     inp = table(data["input"], {"video", "profile", "start_ms", "end_ms"}, {"video", "profile"})
     meta = table(data["metadata"], {"title", "difficulty"}, {"title", "difficulty"})
-    timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "measure_beats", "judgment_calibration",
-                                     "marker_calibrations", "beat_anchors"}, {"mode", "bpm"})
+    timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "beat_zero_ms_exact", "measure_beats", "judgment_calibration",
+                                     "marker_calibrations", "beat_anchors", "origin_adoption", "range_uncertainty"}, {"mode", "bpm"})
     if timing["mode"] != "fixed":
         raise ConfigError("only explicitly supplied fixed BPM is implemented")
     decimal_bpm(timing["bpm"])
     origin = number(timing['beat_zero_ms'], 'timing.beat_zero_ms') if 'beat_zero_ms' in timing else None
+    if 'beat_zero_ms_exact' in timing:
+        if 'beat_zero_ms' in timing:
+            raise ConfigError('supply only one beat origin representation')
+        try:
+            origin = read_ratio(timing['beat_zero_ms_exact'])
+        except ValueError as exc:
+            raise ConfigError(f'invalid timing.beat_zero_ms_exact: {exc}') from exc
     measure = None
     if 'measure_beats' in timing:
         try:
@@ -348,6 +427,20 @@ def load_song(path: str | Path) -> SongConfig:
             raise ConfigError(f'invalid beat anchor: {exc}') from exc
         anchors.append(BeatAnchor(**value))
     validate_reference_inputs(calibrations, anchors)
+    adoption = None
+    if 'origin_adoption' in timing:
+        adoption = OriginAdoption(**table(timing['origin_adoption'], {'policy', 'version'}, {'policy', 'version'}))
+    uncertainty = None
+    if 'range_uncertainty' in timing:
+        value = dict(table(timing['range_uncertainty'],
+                           {'version', 'judgment_scope', 'origin_relation', 'origin_reference_ms_exact', 'endpoint_component'},
+                           {'version', 'judgment_scope', 'origin_relation'}))
+        if 'origin_reference_ms_exact' in value:
+            try:
+                value['origin_reference_ms'] = read_ratio(value.pop('origin_reference_ms_exact'))
+            except ValueError as exc:
+                raise ConfigError(f'invalid uncertainty origin reference: {exc}') from exc
+        uncertainty = RangeUncertainty(**value)
     video = (source.parent / string(inp["video"], "input.video")).resolve()
     profile_name = string(inp["profile"], "input.profile")
     # IDs are resolved in a profiles/ directory beside the song config.
@@ -367,7 +460,7 @@ def load_song(path: str | Path) -> SongConfig:
         settings = table(data["algorithm"], {"config"}, {"config"})
         algorithm = (source.parent / string(settings["config"], "algorithm.config")).resolve()
     return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm,
-                      origin, measure, judgment, calibrations, tuple(anchors))
+                      origin, measure, judgment, calibrations, tuple(anchors), adoption, uncertainty)
 
 
 def load_algorithm(path: Path | None) -> AlgorithmConfig:
@@ -384,7 +477,7 @@ def load_algorithm(path: Path | None) -> AlgorithmConfig:
 
 def load_profile(path: Path) -> Profile:
     data = table(load_toml(path), {"schema_version", "id", "game", "mode", "resolution",
-                 "judge_y", "effect_top", "beat_roi", "alignment", "calibration", "lanes"},
+                 "judge_y", "effect_top", "beat_roi", "alignment", "calibration", "position_calibration", "lanes"},
                  {"id", "game", "mode", "resolution", "judge_y", "effect_top", "beat_roi",
                   "alignment", "calibration", "lanes"})
     for key in ("id", "game", "mode"):
@@ -417,6 +510,7 @@ def load_profile(path: Path) -> Profile:
         elif value["status"] != "unverified" or "offset_px" in value or "error_px" in value:
             raise ConfigError("unverified calibration cannot supply assumed corrections")
         calibrations[kind] = Calibration(**value)
+    position = read_position_calibration(data['position_calibration']) if 'position_calibration' in data else None
     if not isinstance(data["lanes"], list) or not data["lanes"]:
         raise ConfigError("profile requires lanes")
     lanes, hashes, loaded = [], {}, {}
@@ -452,4 +546,4 @@ def load_profile(path: Path) -> Profile:
     if data["mode"] != f"{len(lanes)}k":
         raise ConfigError("profile mode does not match its lane count")
     return Profile(data["id"], data["game"], data["mode"], (width, height), judge, effect,
-                   beat, band, shift, calibrations, lanes, data, hashes)
+                   beat, band, shift, calibrations, lanes, data, hashes, position)

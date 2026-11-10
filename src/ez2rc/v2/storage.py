@@ -40,11 +40,11 @@ def reject_constant(value):
     raise ValueError(f"non-finite JSON value: {value}")
 
 
-def read_json(path: Path, format_name: str) -> dict:
+def read_json(path: Path, format_name: str, *, schema_versions=(SCHEMA_VERSION,)) -> dict:
     value = json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_constant)
     if (not isinstance(value, dict) or value.get("format") != format_name
             or type(value.get("schema_version")) is not int
-            or value["schema_version"] != SCHEMA_VERSION):
+            or value["schema_version"] not in schema_versions):
         raise ValueError(f"unsupported {format_name} schema: {path}")
     return value
 

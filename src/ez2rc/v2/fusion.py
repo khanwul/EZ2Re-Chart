@@ -10,9 +10,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import FusionConfig
+from .config import FusionConfig, read_position_calibration
 from .motion import STATUS, frames, timeline
-from .storage import Cache, CacheError, CacheWriter, digest, stage_key
+from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
 
 VERSION = "scroll-evidence-3"
 CATEGORIES = ("visible", "unknown", "clipped", "judgment_effect", "occluded")
@@ -94,7 +94,10 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
         raise ValueError("fusion motion/observation lineage mismatch")
     key = cache_key(observations, motion, config)
     try:
-        return open_fusion(root / "fusion" / digest(key), key), True
+        cached = open_fusion(root / "fusion" / digest(key), key)
+        if cached.manifest['metadata'].get('position_calibration') != observations.manifest['metadata'].get('position_calibration'):
+            raise CacheError('fusion position declaration differs from its observation parent')
+        return cached, True
     except CacheError:
         pass
     meta = observations.manifest["metadata"]
@@ -237,6 +240,7 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
                     "calibration": {k: profile["calibration"][k] for k in ("tap", "head", "tail")},
                     "endpoint_timing_error_px": [c.get("error_px") if c["status"] == "verified" else None for c in calibrations],
                     "observation_position_error_px": meta.get("position_error_px"),
+                    **({'position_calibration': dict(meta['position_calibration'])} if 'position_calibration' in meta else {}),
                     "error_semantics": "shared scroll envelope plus verified calibration error (tiles add one grid spacing); unverified localization/calibration errors remain unknown, not zero",
                     "endpoint_id": "f{frame_id}:l{lane}:y{seed_row}; lookup original scores/flags in observation_cache_id",
                     "evidence_id": "l{lane}:q{bin_index}:k{kind}; stable across storage chunks",
@@ -251,6 +255,10 @@ def open_fusion(path, expected_key=None):
         key, meta = cache.manifest["key"], cache.manifest["metadata"]
         if key["stage"] != "fusion" or key["algorithm_version"] != VERSION or key["parents"] != [meta["observation_cache_id"], meta["motion_cache_id"]]:
             raise CacheError("unsupported fusion cache/lineage")
+        if 'position_calibration' in meta:
+            declared = read_position_calibration(meta['position_calibration'])
+            if canonical(meta['observation_position_error_px']) != canonical(declared.error_px):
+                raise CacheError('fusion position error differs from its declaration')
         seen, bins, endpoints = set(), 0, 0
         for c in cache.chunks():
             index, endpoint = c["index"], c["endpoint_index"]

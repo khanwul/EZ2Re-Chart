@@ -4,16 +4,17 @@ from dataclasses import asdict
 from html import escape
 from pathlib import Path
 
-from .contracts import Chart, Event, Metadata, Note, TimeInterval, Timing, ratio, read_ratio
+from .contracts import (Chart, Event, Metadata, Note, TimeInterval, Timing,
+                        origin_payload, origin_schema, ratio, read_origin, read_ratio)
 from .storage import read_json, write_json
 
 
 def chart_payload(chart: Chart) -> dict:
     return {
-        "format": "ez2rc.chart", "schema_version": 1, "status": chart.status,
+        "format": "ez2rc.chart", "schema_version": origin_schema(chart.timing.beat_zero_ms), "status": chart.status,
         "metadata": asdict(chart.metadata),
         "timing": {
-            "beat_zero_ms": chart.timing.beat_zero_ms, "status": chart.timing.status,
+            **origin_payload(chart.timing.beat_zero_ms), "status": chart.timing.status,
             "reason": chart.timing.reason,
             "bpm_timeline": [{"start_beat": [0, 1], "bpm": chart.timing.bpm}],
             "measure_lengths": ([{"start_beat": [0, 1], "length_beats": ratio(chart.timing.measure_beats)}]
@@ -31,7 +32,8 @@ def chart_payload(chart: Chart) -> dict:
 
 def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_ref=None, fusion_ref=None,
                    decode_ref=None, time_projection_ref=None, timing_resolution_ref=None,
-                   reference_candidates_ref=None, reference_origin_link_ref=None,
+                   reference_candidates_ref=None, reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
+                   endpoint_time_ranges_ref=None,
                    pixel_intervals=(), pending_stages=(), candidates=()) -> dict:
     ids = [event.id for event in events]
     if len(ids) != len(set(ids)):
@@ -40,9 +42,12 @@ def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_re
             "motion_ref": motion_ref, "observation_ref": observation_ref,
             "fusion_ref": fusion_ref,
             "decode_ref": decode_ref, "time_projection_ref": time_projection_ref,
+            **({'endpoint_time_ranges_ref': endpoint_time_ranges_ref} if endpoint_time_ranges_ref is not None else {}),
             "timing_resolution_ref": timing_resolution_ref, "pixel_intervals": list(pixel_intervals),
             "reference_candidates_ref": reference_candidates_ref,
             "reference_origin_link_ref": reference_origin_link_ref,
+            "origin_adoption_ref": origin_adoption_ref,
+            "beat_ranges_ref": beat_ranges_ref,
             "pending_stages": list(pending_stages), "candidates": list(candidates),
             "events": [asdict(e) for e in sorted(events, key=lambda e: e.id)]}
 
@@ -67,7 +72,7 @@ def read_events(path: Path) -> dict:
 
 
 def read_chart(path: Path) -> dict:
-    value = read_json(path, "ez2rc.chart")
+    value = read_json(path, "ez2rc.chart", schema_versions=(1, 2))
     try:
         metadata = Metadata(**value["metadata"])
         notes = tuple(Note(n["id"], n["lane"], n["type"], read_ratio(n["start_beat"]),
@@ -80,7 +85,7 @@ def read_chart(path: Path) -> dict:
         measures = timing["measure_lengths"]
         if measures is not None and (len(measures) != 1 or read_ratio(measures[0]["start_beat"]) != 0):
             raise ValueError("only constant measure length is implemented")
-        clock = Timing(tempo[0]["bpm"], timing["beat_zero_ms"],
+        clock = Timing(tempo[0]["bpm"], read_origin(timing, value['schema_version']),
                        read_ratio(measures[0]["length_beats"]) if measures is not None else None,
                        timing["status"], timing["reason"])
         unresolved = value["unresolved"]
@@ -105,7 +110,8 @@ def read_chart(path: Path) -> dict:
 def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observation_ref: str,
                   candidates=(), motion_ref=None, fusion_ref=None, decode_ref=None,
                   time_projection_ref=None, timing_resolution_ref=None, reference_candidates_ref=None,
-                  reference_origin_link_ref=None,
+                  reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
+                  endpoint_time_ranges_ref=None,
                   pixel_intervals=(), diagnostics=None):
     event_ids = {e.id for e in events}
     if not {n.id for n in (*chart.notes, *chart.unresolved)} <= event_ids:
@@ -118,12 +124,18 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
     for event in chart.unresolved:
         if by_id[event.id] != event:
             raise ValueError("unresolved chart event disagrees with evidence")
-    write_json(root / "chart.json", chart_payload(chart))
+    payload = chart_payload(chart)
+    if beat_ranges_ref is not None:
+        payload['beat_ranges_ref'] = beat_ranges_ref
+    write_json(root / "chart.json", payload)
     write_json(root / "artifacts/events.json", events_payload(
         events, observation_ref=observation_ref, motion_ref=motion_ref, fusion_ref=fusion_ref,
         decode_ref=decode_ref, time_projection_ref=time_projection_ref, timing_resolution_ref=timing_resolution_ref,
+        endpoint_time_ranges_ref=endpoint_time_ranges_ref,
         reference_candidates_ref=reference_candidates_ref,
         reference_origin_link_ref=reference_origin_link_ref,
+        origin_adoption_ref=origin_adoption_ref,
+        beat_ranges_ref=beat_ranges_ref,
         pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
     items = "".join(f"<li id='{escape(e.id, quote=True)}'>Lane {e.lane + 1}: "
@@ -137,6 +149,12 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                   "Visual scores are not probabilities; empty notes do not indicate an empty chart.</p>"
                   f"<p><a href='{escape(motion_ref, quote=True)}'>Scroll evidence</a> · "
                   f"<a href='{escape(fusion_ref, quote=True)}'>Accumulated evidence</a></p>")
+        if diagnostics.get('position_calibration') is not None:
+            position = diagnostics['position_calibration']
+            bound = f"{position['error_px']} px" if 'error_px' in position else 'unknown'
+            visual += (f"<p>Caller-declared observation localization: {escape(position['status'])}; "
+                       f"bound: {escape(bound)}; version: {escape(position['version'])}; "
+                       f"scope: {escape(position['scope'])}.</p>")
         if decode_ref:
             states = ", ".join(f"{key}: {value}" for key, value in diagnostics['decode'].items())
             visual += (f"<p>Pixel interval states: {escape(states)}.</p>"
@@ -151,12 +169,21 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
     if timing_resolution_ref:
         visual += (f"<p><a href='{escape(timing_resolution_ref, quote=True)}'>Timing decisions and supplied reference</a>. "
                    f"Resolved notes: {len(chart.notes)}; unresolved events: {len(chart.unresolved)}.</p>")
+    if endpoint_time_ranges_ref:
+        visual += (f"<p><a href='{escape(endpoint_time_ranges_ref, quote=True)}'>Conditional endpoint time ranges</a>. "
+                   "Pixel error components use observed scroll support; missing error bounds stay unknown.</p>")
     if reference_candidates_ref:
         visual += (f"<p><a href='{escape(reference_candidates_ref, quote=True)}'>Visual musical-reference candidates</a>. "
                    "Raw cyclic phases require separate marker calibration and an absolute reference.</p>")
     if reference_origin_link_ref:
         visual += (f"<p><a href='{escape(reference_origin_link_ref, quote=True)}'>Marker calibration and absolute-anchor comparisons</a>. "
-                   "Inspect compatible and conflicting origins; these diagnostics do not change timing decisions.</p>")
+                   "Inspect compatible and conflicting origins and their calibration assumptions.</p>")
+    if origin_adoption_ref:
+        visual += (f"<p><a href='{escape(origin_adoption_ref, quote=True)}'>Origin adoption decision</a>. "
+                   "Anchor use requires an explicit policy; exact origins, preserved intervals, and blocked requests are recorded.</p>")
+    if beat_ranges_ref:
+        visual += (f"<p><a href='{escape(beat_ranges_ref, quote=True)}'>Conditional beat ranges</a>. "
+                   "Ranges share one origin shift across all endpoints and remain separate from resolved notes.</p>")
     pixel_table = ("<table><caption>Relative pixel intervals; costs cover the whole lane</caption>"
                    "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th>"
                    "<th>Review causes in competing hypotheses</th></tr>"

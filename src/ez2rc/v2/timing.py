@@ -9,11 +9,12 @@ from fractions import Fraction
 
 import numpy as np
 
-from .contracts import Chart, Event, Metadata, Note, Timing, decimal_bpm, finite_number, ratio
+from .contracts import (Chart, Event, Metadata, Note, Timing, decimal_bpm, exact_ms,
+                        finite_number, origin_payload, origin_schema, ratio)
 from .motion import STATUS, timeline
 
 PROJECTION_VERSION = "scroll-time-projection-1"
-RESOLUTION_VERSION = "explicit-timing-1"
+RESOLUTION_VERSION = "explicit-timing-2"
 
 
 class ScrollTimeMap:
@@ -80,6 +81,9 @@ def project_video_times(observations, movement, decoded):
     if (movement.manifest['key']['parents'] != [observations.id]
             or decoded.manifest['key']['parents'][:2] != [observations.id, movement.id]):
         raise ValueError('time projection parent lineage mismatch')
+    if (decoded.manifest.get('metadata', {}).get('position_calibration')
+            != observations.manifest['metadata'].get('position_calibration')):
+        raise ValueError('time projection position declaration differs between parents')
     curve = ScrollTimeMap(timeline(movement))
     calibrations = observations.manifest['metadata']['profile']['calibration']
     output, counts = [], {}
@@ -106,6 +110,8 @@ def project_video_times(observations, movement, decoded):
                        'candidates': [{**{k: c[k] for k in ('id', 'type', 'selected', 'start', 'end')},
                                        'pixel_status': statuses[c['id']]} for c in candidates]})
     return {'format': 'ez2rc.time-projection', 'schema_version': 1, 'algorithm_version': PROJECTION_VERSION,
+            **({'position_calibration': dict(observations.manifest['metadata']['position_calibration'])}
+               if 'position_calibration' in observations.manifest['metadata'] else {}),
             'status': 'provisional', 'timing_status': 'pending',
             'observation_cache_id': observations.id, 'motion_cache_id': movement.id, 'decode_cache_id': decoded.id,
             'coordinate': 'q = representative scroll at the judgment line; timestamps use the capture timeline',
@@ -116,13 +122,13 @@ def project_video_times(observations, movement, decoded):
 def beat_to_ms(beat: Fraction, timing: Timing) -> Fraction:
     if timing.beat_zero_ms is None:
         raise ValueError("beat origin is unresolved")
-    return Fraction(str(timing.beat_zero_ms)) + beat * 60000 / decimal_bpm(timing.bpm)
+    return exact_ms(timing.beat_zero_ms) + beat * 60000 / decimal_bpm(timing.bpm)
 
 
 def ms_to_beat(timestamp_ms: Fraction, timing: Timing) -> Fraction:
     if timing.beat_zero_ms is None:
         raise ValueError("beat origin is unresolved")
-    return (timestamp_ms - Fraction(str(timing.beat_zero_ms))) * decimal_bpm(timing.bpm) / 60000
+    return (timestamp_ms - exact_ms(timing.beat_zero_ms)) * decimal_bpm(timing.bpm) / 60000
 
 
 class TimingResolver:
@@ -219,11 +225,11 @@ def resolve_pixel_timing(events, pixels, projection, metadata, bpm, *, beat_zero
     for row, event in zip(rows, final_events):
         row.update(status=event.status, reason=event.reason,
                    accepted_start_ms=event.start_ms, accepted_end_ms=event.end_ms)
-    report = {'format': 'ez2rc.timing-resolution', 'schema_version': 1, 'algorithm_version': RESOLUTION_VERSION,
+    report = {'format': 'ez2rc.timing-resolution', 'schema_version': origin_schema(beat_zero_ms), 'algorithm_version': RESOLUTION_VERSION,
               'status': chart.status, 'projection_version': projection['algorithm_version'],
               'observation_cache_id': projection['observation_cache_id'], 'motion_cache_id': projection['motion_cache_id'],
               'decode_cache_id': projection['decode_cache_id'],
-              'reference': {'bpm': bpm, 'beat_zero_ms': beat_zero_ms,
+              'reference': {'bpm': bpm, **origin_payload(beat_zero_ms),
                             'measure_beats': ratio(measure_beats) if measure_beats is not None else None,
                             'status': chart.timing.status},
               'judgment_calibration': asdict(judgment_calibration) if judgment_calibration is not None else None,

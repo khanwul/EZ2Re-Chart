@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import DecodeConfig
+from .config import DecodeConfig, read_position_calibration
 from .contracts import Event
 from .motion import STATUS, timeline
 from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
@@ -559,9 +559,15 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
     if (motion.manifest['key']['parents'] != [observations.id]
             or fusion.manifest['key']['parents'] != [observations.id, motion.id]):
         raise ValueError('decode parent lineage mismatch')
+    declaration = observations.manifest['metadata'].get('position_calibration')
+    if fusion.manifest['metadata'].get('position_calibration') != declaration:
+        raise ValueError('decode position declaration differs between parents')
     key = cache_key(observations, motion, fusion, config)
     try:
-        return open_decode(root / 'decode' / digest(key), key), True
+        cached = open_decode(root / 'decode' / digest(key), key)
+        if cached.manifest['metadata'].get('position_calibration') != declaration:
+            raise CacheError('decode position declaration differs from its observation parent')
+        return cached, True
     except CacheError:
         pass
     clock = timeline(motion)
@@ -583,6 +589,7 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
                               'fusion_cache_id': fusion.id, 'lane_count': meta['lane_count'],
                               'event_status_counts': counts, 'candidate_count': candidate_count,
                               'endpoint_count': endpoint_count,
+                              **({'position_calibration': dict(meta['position_calibration'])} if 'position_calibration' in meta else {}),
                               'grid_px': meta['grid_px'],
                               'coordinate': 'relative scroll pixels; never milliseconds or beats',
                               'cost_semantics': 'heuristic additive costs, not probabilities',
@@ -731,7 +738,12 @@ def open_decode(path, expected_key=None):
             grid = meta['grid_px']
             if not math.isfinite(grid) or grid <= 0:
                 raise CacheError('invalid decode grid')
-            statuses, candidates, endpoints = _validate_lane(lane, _lane_payload(chunk), DecodeConfig(**key['parameters']), grid)
+            payload = _lane_payload(chunk)
+            if 'position_calibration' in meta:
+                declared = read_position_calibration(meta['position_calibration'])
+                if any(canonical(e['localization_error_px']) != canonical(declared.error_px) for e in payload['endpoints']):
+                    raise CacheError('decoded localization error differs from its declaration')
+            statuses, candidates, endpoints = _validate_lane(lane, payload, DecodeConfig(**key['parameters']), grid)
             for status, count in statuses.items():
                 counts[status] += count
             candidate_count += candidates; endpoint_count += endpoints; lane_count += 1

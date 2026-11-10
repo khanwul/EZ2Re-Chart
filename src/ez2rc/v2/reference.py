@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from .contracts import Timing, decimal_bpm, finite_number, ratio
+from .contracts import Timing, decimal_bpm, finite_number, origin_payload, origin_schema, ratio
 from .motion import STATUS, timeline
 from .timing import ScrollTimeMap
 
@@ -215,9 +215,9 @@ def reference_candidates(observations, movement, bpm, *, beat_zero_ms=None, meas
     bars = _barline_tracks(rows, groups, curve, profile, tolerance)
     period = 60000 / decimal_bpm(bpm)
     return {
-        'format': 'ez2rc.reference-candidates', 'schema_version': 1, 'algorithm_version': VERSION,
+        'format': 'ez2rc.reference-candidates', 'schema_version': origin_schema(beat_zero_ms), 'algorithm_version': VERSION,
         'status': 'unresolved', 'observation_cache_id': observations.id, 'motion_cache_id': movement.id,
-        'supplied_reference': {'bpm': bpm, 'beat_zero_ms': beat_zero_ms,
+        'supplied_reference': {'bpm': bpm, **origin_payload(beat_zero_ms),
                                'measure_beats': ratio(measure_beats) if measure_beats is not None else None},
         'inferred_beat_zero_ms': None, 'inferred_measure_beats': None,
         'reasons': ['marker_musical_meaning_unverified', 'marker_clock_offsets_unverified',
