@@ -22,7 +22,7 @@ from .motion import STATUS, timeline
 from .observation import template_shapes
 from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
 
-VERSION = "lane-interval-dp-4"
+VERSION = "lane-interval-dp-5"
 KINDS = ("tap", "head", "tail")
 
 
@@ -103,6 +103,20 @@ def ordered_dp(size, candidates, margin, *, verify=False):
     return best
 
 
+class BodyRunScale:
+    """Share a bounded brightness reward across fragments of a continuous run."""
+    def __init__(self, runs):
+        self.runs = np.asarray(runs, dtype=float).reshape(-1, 2)
+        self.lengths = self.runs[:, 1] - self.runs[:, 0]
+
+    def scale(self, start, end, minimum):
+        if start >= end:
+            return minimum
+        first = int(np.searchsorted(self.runs[:, 1], start, side='right'))
+        stop = int(np.searchsorted(self.runs[:, 0], end, side='left'))
+        return max(minimum, float(self.lengths[first:stop].max()) if first < stop else 0.)
+
+
 class BodyEvidence:
     """Sparse cells interpreted as piecewise constant, with prefix integrals.
 
@@ -159,6 +173,7 @@ class BodyEvidence:
                 last = q
         if start is not None:
             self.runs.append((start, last + grid))
+        self.reward_scale = BodyRunScale(self.runs)
 
     def integral(self, x):
         j = int(np.searchsorted(self.q, x, side='right'))
@@ -186,6 +201,7 @@ class BodyEvidence:
                 'supported_bright_px': supported, 'supported_fraction': supported_fraction,
                 'absent_px': max(0., float(dark)), 'unavailable_px': unavailable,
                 'support_fraction': support, 'support_scale_px': scale,
+                'reward_scale_px': self.reward_scale.scale(start, end, scale),
                 'fusion_error_px': float(self.errors[left:right].max()) if right > left else None,
                 'frame_bounds': [first, last], 'motion_ambiguous': uncertain,
                 'cost': float(self.config.absence_cost_per_px * max(0., dark)
@@ -423,6 +439,13 @@ def interval_cost(endpoints, missing, body, config):
             'body_unavailable': config.unavailable_cost_per_px * body['unavailable_px'] if body else 0.}
     if body is not None and 'endpoint_overlap_supported_px' in body:
         terms['endpoint_body_overlap'] = reward * body['endpoint_overlap_supported_px'] / body['support_scale_px']
+    if body is not None:
+        # A shorter hypothesis may consume only its share of a continuous run.
+        # Use the same independent brightness after template-overlap accounting;
+        # absence, unavailable coverage and endpoint evidence keep their costs.
+        independent = body['supported_bright_px'] - body.get('endpoint_overlap_supported_px', 0.)
+        terms['body_run_allocation'] = reward * independent * (
+            1 / body['support_scale_px'] - 1 / body['reward_scale_px'])
     return terms
 
 
@@ -586,6 +609,7 @@ def summarize_lane(lane, sites, endpoints, body, config):
     best = ordered_dp(len(tokens), candidates, config.ambiguity_cost)
     events = review_events(lane, candidates, endpoints, config, best)
     return {'format': 'ez2rc.decode-lane', 'schema_version': 1, 'lane': lane,
+            'body_support_runs_px': [[float(a), float(b)] for a, b in body.runs],
             **({'shared_body_footprints_px': body.endpoint_footprints} if body.endpoint_footprints is not None else {}),
             'sites': sites, 'endpoints': endpoints, 'candidates': candidates, 'events': events,
             'best_cost': best, 'token_count': len(tokens), 'noise_dominated_pair_count': omitted,
@@ -681,6 +705,7 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
                               'body_overlap_policy': ('shared_supported_template_footprints'
                                   if template_shapes(observations.manifest['key']['parameters']) is not None
                                   else 'unavailable_template_geometry'),
+                              'body_reward_policy': 'shared_contiguous_run_scale',
                               'motion_policy': 'representative fusion trajectory; original alternatives in motion parent',
                               'boundary_policy': 'lane-wide retained evidence; storage edges never create endpoints',
                               'timing_status': 'pending'}, validate=open_decode), False
@@ -709,9 +734,19 @@ def _validate_lane(lane, data, config, grid):
     counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
     if data['format'] != 'ez2rc.decode-lane' or data['schema_version'] != 1 or data['lane'] != lane:
         raise CacheError('invalid decoded lane')
+    runs = data.get('body_support_runs_px')
+    if (not isinstance(runs, list) or any(not isinstance(r, list) or len(r) != 2
+            or not all(type(v) in (int, float) and math.isfinite(v) for v in r)
+            or r[0] >= r[1] for r in runs)
+            or any(a[1] >= b[0] for a, b in zip(runs, runs[1:]))):
+        raise CacheError('invalid body support runs')
+    reward_scale = BodyRunScale(runs)
     eps = {e['id']: e for e in data['endpoints']}
     cs = {c['id']: c for c in data['candidates']}
     sites = {s['id']: s for s in data['sites']}
+    if runs != sorted(c['body']['range_px'] for c in cs.values()
+                      if c['start'] is None and c['end'] is None):
+        raise CacheError('body support runs differ from retained body hypotheses')
     if (len(eps) != len(data['endpoints']) or len(cs) != len(data['candidates'])
             or len(sites) != len(data['sites'])):
         raise CacheError('duplicate decode identities')
@@ -772,6 +807,9 @@ def _validate_lane(lane, data, config, grid):
             if ('endpoint_overlap_supported_px' in c['body']) != ('shared_body_footprints_px' in data):
                 raise CacheError('inconsistent body overlap policy')
             _validate_body(c['body'], config, grid)
+            a, b = c['body']['range_px']
+            if c['body']['reward_scale_px'] != reward_scale.scale(a, b, c['body']['support_scale_px']):
+                raise CacheError('body reward scale differs from shared runs')
             if 'shared_body_footprints_px' in data:
                 a, b = c['body']['range_px']
                 masked_length = sum(max(0., min(b, hi) - max(a, lo))
@@ -819,11 +857,12 @@ def _validate_body(body, config, grid):
             raise CacheError('invalid endpoint body overlap')
     dark, unavailable, scale = body['absent_px'], body['unavailable_px'], body['support_scale_px']
     values = (start, end, bright, supported, dark, unavailable, scale,
-              body['support_fraction'], body['supported_fraction'], body['cost'])
+              body['support_fraction'], body['supported_fraction'], body['cost'], body['reward_scale_px'])
     if (not all(math.isfinite(v) for v in values) or length < 0
             or min(bright, supported, dark, unavailable) < 0 or supported > bright
             or bright + dark + unavailable > length + 1e-8
             or scale != max(length, grid, config.body_support_px)
+            or body['reward_scale_px'] < scale
             or body['support_fraction'] != bright / scale
             or body['supported_fraction'] != supported / scale
             or body['cost'] != float(config.absence_cost_per_px * dark
@@ -843,6 +882,8 @@ def open_decode(path, expected_key=None):
             if (key['stage'] != 'decode' or key['algorithm_version'] != VERSION
                     or key['parents'] != [meta[f'{s}_cache_id'] for s in ('observation', 'motion', 'fusion')]):
                 raise CacheError('unsupported decode cache/lineage')
+            if meta.get('body_reward_policy') != 'shared_contiguous_run_scale':
+                raise CacheError('unsupported body reward policy')
             grid = meta['grid_px']
             if not math.isfinite(grid) or grid <= 0:
                 raise CacheError('invalid decode grid')

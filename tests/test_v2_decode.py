@@ -204,8 +204,9 @@ class IntervalDPTest(unittest.TestCase):
         data = scene(points, [(21, 43)])
         self.assertEqual(selected(data), [('tap', 43., None)])
         self.assertTrue(any(c['missing_endpoints'] for c in data['candidates']))
-        old = scene(points, [(21, 43)], config=DecodeConfig(body_support_px=1))
-        self.assertIn(('longnote', None, 30.), selected(old))
+        small_scale = scene(points, [(21, 43)], config=DecodeConfig(body_support_px=1))
+        # A fragment still receives only its share of the continuous sprite.
+        self.assertEqual(selected(small_scale), [('tap', 43., None)])
 
     def test_short_body_only_noise_and_real_short_longnote_are_distinguished(self):
         self.assertEqual(selected(scene([], [(20, 22)])), [])
