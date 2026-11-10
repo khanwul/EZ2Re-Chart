@@ -27,6 +27,7 @@ from .reference_link import VERSION as REFERENCE_LINK_VERSION, link_reference_or
 from .origin import VERSION as ORIGIN_VERSION, adopt_reference_origin
 from .beat_ranges import project_beat_ranges
 from .endpoint_ranges import VERSION as ENDPOINT_RANGES_VERSION, project_endpoint_time_ranges
+from .relative_beats import load_reference, project_relative_beats
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
 
@@ -170,6 +171,17 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         write_json(root / adoption_ref, adoption)
         profile_data = meta["profile"]
         events, pixel_intervals = output_events(decoded)
+        relative_ref, relative = None, None
+        if song.relative_beats is not None:
+            relative_input = load_reference(song.relative_beats)
+            relative = project_relative_beats(observations, motion, decoded, relative_input,
+                                              measure_beats=song.measure_beats)
+            relative_input_ref = 'artifacts/spatial-beat-reference.json'
+            write_json(root / relative_input_ref, relative_input)
+            relative.update(input_sha256=song.relative_beats['sha256'],
+                            reference_ref=relative_input_ref, reference_sha256=file_hash(root / relative_input_ref))
+            relative_ref = 'artifacts/relative-beats.json'
+            write_json(root / relative_ref, relative)
         chart, events, resolution = resolve_pixel_timing(
             events, pixel_intervals, projection,
             Metadata(profile_data["game"], profile_data["mode"], len(profile_data["lanes"]),
@@ -211,6 +223,10 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                     "bounded_events": ranges['bounded_event_count'],
                                     "artifact_ref": resolution_ref, "resolved_notes": len(chart.notes),
                                     "unresolved_events": len(chart.unresolved)}
+        if relative is not None:
+            run['stages']['timing'].update(relative_beats_ref=relative_ref,
+                relative_beats_version=relative['algorithm_version'],
+                relative_beat_candidates=relative['conditional_candidate_count'])
         active = "export"
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
@@ -223,6 +239,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                       reference_origin_link_ref=reference_link_ref,
                       origin_adoption_ref=adoption_ref,
                       beat_ranges_ref=ranges_ref,
+                      relative_beats_ref=relative_ref, relative_beats=relative,
                       candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
                                    "decode": decoded.manifest["metadata"]["event_status_counts"],

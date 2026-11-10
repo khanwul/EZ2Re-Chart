@@ -33,7 +33,7 @@ def chart_payload(chart: Chart) -> dict:
 def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_ref=None, fusion_ref=None,
                    decode_ref=None, time_projection_ref=None, timing_resolution_ref=None,
                    reference_candidates_ref=None, reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
-                   endpoint_time_ranges_ref=None,
+                   endpoint_time_ranges_ref=None, relative_beats_ref=None,
                    pixel_intervals=(), pending_stages=(), candidates=()) -> dict:
     ids = [event.id for event in events]
     if len(ids) != len(set(ids)):
@@ -48,6 +48,7 @@ def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_re
             "reference_origin_link_ref": reference_origin_link_ref,
             "origin_adoption_ref": origin_adoption_ref,
             "beat_ranges_ref": beat_ranges_ref,
+            **({'relative_beats_ref': relative_beats_ref} if relative_beats_ref is not None else {}),
             "pending_stages": list(pending_stages), "candidates": list(candidates),
             "events": [asdict(e) for e in sorted(events, key=lambda e: e.id)]}
 
@@ -111,7 +112,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                   candidates=(), motion_ref=None, fusion_ref=None, decode_ref=None,
                   time_projection_ref=None, timing_resolution_ref=None, reference_candidates_ref=None,
                   reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
-                  endpoint_time_ranges_ref=None,
+                  endpoint_time_ranges_ref=None, relative_beats_ref=None, relative_beats=None,
                   pixel_intervals=(), diagnostics=None):
     event_ids = {e.id for e in events}
     if not {n.id for n in (*chart.notes, *chart.unresolved)} <= event_ids:
@@ -127,6 +128,8 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
     payload = chart_payload(chart)
     if beat_ranges_ref is not None:
         payload['beat_ranges_ref'] = beat_ranges_ref
+    if relative_beats_ref is not None:
+        payload['relative_beats_ref'] = relative_beats_ref
     write_json(root / "chart.json", payload)
     write_json(root / "artifacts/events.json", events_payload(
         events, observation_ref=observation_ref, motion_ref=motion_ref, fusion_ref=fusion_ref,
@@ -136,6 +139,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         reference_origin_link_ref=reference_origin_link_ref,
         origin_adoption_ref=origin_adoption_ref,
         beat_ranges_ref=beat_ranges_ref,
+        relative_beats_ref=relative_beats_ref,
         pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
     items = "".join(f"<li id='{escape(e.id, quote=True)}'>Lane {e.lane + 1}: "
@@ -184,6 +188,29 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
     if beat_ranges_ref:
         visual += (f"<p><a href='{escape(beat_ranges_ref, quote=True)}'>Conditional beat ranges</a>. "
                    "Ranges share one origin shift across all endpoints and remain separate from resolved notes.</p>")
+    if relative_beats_ref:
+        visual += (f"<p><a href='{escape(relative_beats_ref, quote=True)}'>First-barline relative beats and capture times</a>. "
+                   "Beat zero is the first barline. Relative beats use spatial anchors; recording timestamps use observed scroll. "
+                   "Conditional ranges, extrapolation and ambiguous selections remain separate from exact notes.</p>")
+        if relative_beats is not None:
+            def interval(value):
+                if value is None:
+                    return 'unavailable'
+                return f"[{float(read_ratio(value['lower'])):.6f}, {float(read_ratio(value['upper'])):.6f}]"
+            relative_rows = []
+            for row in relative_beats['candidates']:
+                for side, point in row['endpoints'].items():
+                    beat = point['relative_beat']
+                    capture = point['capture_time']
+                    reasons = row['reasons'] + (['capture: ' + r for r in capture['reasons']] if capture else [])
+                    relative_rows.append(f"<tr><td>{escape(row['candidate_id'])} / {escape(side)}</td>"
+                        f"<td>{interval(beat['beat_range'] if beat else None)}</td>"
+                        f"<td>{interval(capture['time_range_ms'] if capture else None)}</td>"
+                        f"<td>{interval(row['duration_beat_range']) if row['type'] == 'longnote' else '—'}</td>"
+                        f"<td>{escape(', '.join(reasons) or row['pixel_status'])}</td></tr>")
+            visual += ("<table><caption>Conditional coordinates; capture milliseconds and relative beats are distinct</caption>"
+                       "<tr><th>Candidate / endpoint</th><th>Relative beat</th><th>Capture ms</th><th>Length (beats)</th><th>State</th></tr>"
+                       + ''.join(relative_rows) + '</table>')
     pixel_table = ("<table><caption>Relative pixel intervals; costs cover the whole lane</caption>"
                    "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th>"
                    "<th>Review causes in competing hypotheses</th></tr>"

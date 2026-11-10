@@ -195,6 +195,7 @@ class SongConfig:
     beat_anchors: tuple[BeatAnchor, ...] = ()
     origin_adoption: OriginAdoption | None = None
     range_uncertainty: RangeUncertainty | None = None
+    relative_beats: dict | None = None
 
     def snapshot(self):
         values = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
@@ -388,7 +389,7 @@ def load_song(path: str | Path) -> SongConfig:
     inp = table(data["input"], {"video", "profile", "start_ms", "end_ms"}, {"video", "profile"})
     meta = table(data["metadata"], {"title", "difficulty"}, {"title", "difficulty"})
     timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "beat_zero_ms_exact", "measure_beats", "judgment_calibration",
-                                     "marker_calibrations", "beat_anchors", "origin_adoption", "range_uncertainty"}, {"mode", "bpm"})
+                                     "marker_calibrations", "beat_anchors", "origin_adoption", "range_uncertainty", "relative_beats"}, {"mode", "bpm"})
     if timing["mode"] != "fixed":
         raise ConfigError("only explicitly supplied fixed BPM is implemented")
     decimal_bpm(timing["bpm"])
@@ -459,8 +460,16 @@ def load_song(path: str | Path) -> SongConfig:
     if "algorithm" in data:
         settings = table(data["algorithm"], {"config"}, {"config"})
         algorithm = (source.parent / string(settings["config"], "algorithm.config")).resolve()
+    relative = None
+    if 'relative_beats' in timing:
+        value = table(timing['relative_beats'], {'path', 'sha256'}, {'path', 'sha256'})
+        checksum = string(value['sha256'], 'relative_beats.sha256')
+        if len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum):
+            raise ConfigError('relative_beats.sha256 must be a lowercase SHA-256')
+        relative = {'path': str((source.parent / string(value['path'], 'relative_beats.path')).resolve()),
+                    'sha256': checksum}
     return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm,
-                      origin, measure, judgment, calibrations, tuple(anchors), adoption, uncertainty)
+                      origin, measure, judgment, calibrations, tuple(anchors), adoption, uncertainty, relative)
 
 
 def load_algorithm(path: Path | None) -> AlgorithmConfig:
