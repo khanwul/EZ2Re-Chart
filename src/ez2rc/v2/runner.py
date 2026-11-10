@@ -28,6 +28,7 @@ from .origin import VERSION as ORIGIN_VERSION, adopt_reference_origin
 from .beat_ranges import project_beat_ranges
 from .endpoint_ranges import VERSION as ENDPOINT_RANGES_VERSION, project_endpoint_time_ranges
 from .relative_beats import load_reference, project_relative_beats
+from .window import song_window, has_context, analysis_scope, scope_events
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
 
@@ -109,16 +110,23 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             for chunk in capture.chunks():
                 validate_timeline(chunk, capture.manifest["metadata"])
             capture_parameters = capture.manifest["key"]["parameters"]
+            window = song_window(song)
+            declared_window = window if has_context(window) else None
             if (capture.id != capture_id
                     or observations.manifest["key"]["parents"] != [capture.id]
                     or capture_parameters["start_ms"] != song.start_ms
                     or capture_parameters["end_ms"] != song.end_ms
-                    or capture_parameters["timestamp_policy"] != algorithm.timestamp_policy):
+                    or capture_parameters["timestamp_policy"] != algorithm.timestamp_policy
+                    or capture_parameters.get('analysis_window') != declared_window
+                    or params.get('analysis_window') != declared_window
+                    or capture.manifest['metadata'].get('analysis_window') != declared_window):
                 raise ValueError("capture lineage or analysis interval differs from the configuration")
             reused = True
         meta = observations.manifest["metadata"]
         run["input"] = {"video_sha256": meta["video_sha256"], "asset_sha256": meta["asset_sha256"],
                         "capture": meta["capture"], "profile": meta["profile"]}
+        if has_context(song_window(song)):
+            run['input']['analysis_window'] = song_window(song)
         run["cost"]["capture_observation_seconds"] = time.monotonic() - started
         for stage, cache in (("capture", capture), ("observation", observations)):
             run["stages"][stage] = {"status": "complete", "cache_id": cache.id, "reused": reused,
@@ -145,7 +153,15 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                       "artifact_ref": f"artifacts/{active}/manifest.json"}
             attach_cache(cache, root / "artifacts" / active)
         active = "timing"
+        scope_ref, scope = None, None
+        if has_context(song_window(song)):
+            scope = analysis_scope(observations, motion, decoded, song_window(song))
+            scope_ref = 'artifacts/analysis-scope.json'
+            write_json(root / scope_ref, scope)
+            run['analysis_scope_ref'] = scope_ref
         projection = project_video_times(observations, motion, decoded)
+        if scope_ref is not None:
+            projection.update(analysis_scope_ref=scope_ref, observation_scope='includes_auxiliary')
         projection_ref = "artifacts/time-projection.json"
         write_json(root / projection_ref, projection)
         endpoint_ranges_ref = 'artifacts/endpoint-time-ranges.json'
@@ -171,11 +187,15 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         write_json(root / adoption_ref, adoption)
         profile_data = meta["profile"]
         events, pixel_intervals = output_events(decoded)
+        if scope is not None:
+            events, pixel_intervals = scope_events(events, pixel_intervals, scope)
         relative_ref, relative = None, None
         if song.relative_beats is not None:
             relative_input = load_reference(song.relative_beats)
             relative = project_relative_beats(observations, motion, decoded, relative_input,
                                               measure_beats=song.measure_beats)
+            if scope_ref is not None:
+                relative.update(analysis_scope_ref=scope_ref, observation_scope='includes_auxiliary')
             relative_input_ref = 'artifacts/spatial-beat-reference.json'
             write_json(root / relative_input_ref, relative_input)
             relative.update(input_sha256=song.relative_beats['sha256'],
@@ -240,6 +260,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                       origin_adoption_ref=adoption_ref,
                       beat_ranges_ref=ranges_ref,
                       relative_beats_ref=relative_ref, relative_beats=relative,
+                      analysis_scope_ref=scope_ref, analysis_scope=scope,
                       candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
                                    "decode": decoded.manifest["metadata"]["event_status_counts"],

@@ -196,6 +196,12 @@ class SongConfig:
     origin_adoption: OriginAdoption | None = None
     range_uncertainty: RangeUncertainty | None = None
     relative_beats: dict | None = None
+    context_before_ms: float = 0.0
+    context_after_ms: float = 0.0
+
+    def __post_init__(self):
+        number(self.context_before_ms, 'context_before_ms', 0)
+        number(self.context_after_ms, 'context_after_ms', 0)
 
     def snapshot(self):
         values = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
@@ -386,7 +392,8 @@ def load_song(path: str | Path) -> SongConfig:
     source = Path(path).resolve()
     data = table(load_toml(source), {"schema_version", "input", "metadata", "timing", "algorithm"},
                  {"input", "metadata", "timing"})
-    inp = table(data["input"], {"video", "profile", "start_ms", "end_ms"}, {"video", "profile"})
+    inp = table(data["input"], {"video", "profile", "start_ms", "end_ms",
+                                "context_before_ms", "context_after_ms"}, {"video", "profile"})
     meta = table(data["metadata"], {"title", "difficulty"}, {"title", "difficulty"})
     timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "beat_zero_ms_exact", "measure_beats", "judgment_calibration",
                                      "marker_calibrations", "beat_anchors", "origin_adoption", "range_uncertainty", "relative_beats"}, {"mode", "bpm"})
@@ -469,7 +476,9 @@ def load_song(path: str | Path) -> SongConfig:
         relative = {'path': str((source.parent / string(value['path'], 'relative_beats.path')).resolve()),
                     'sha256': checksum}
     return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm,
-                      origin, measure, judgment, calibrations, tuple(anchors), adoption, uncertainty, relative)
+                      origin, measure, judgment, calibrations, tuple(anchors), adoption, uncertainty, relative,
+                      number(inp.get('context_before_ms', 0), 'context_before_ms', 0),
+                      number(inp.get('context_after_ms', 0), 'context_after_ms', 0))
 
 
 def load_algorithm(path: Path | None) -> AlgorithmConfig:

@@ -187,20 +187,25 @@ def observe_frame(frame, profile, algo, offset):
 
 
 def cache_keys(song, profile, algo, video_hash):
+    from .window import song_window, has_context
+    window = song_window(song)
+    scope = {'analysis_window': window} if has_context(window) else {}
     capture = stage_key("capture", CAPTURE_VERSION, {
         "video_sha256": video_hash, "start_ms": song.start_ms, "end_ms": song.end_ms,
-        "timestamp_policy": algo.timestamp_policy, **decoder_parameters()})
+        "timestamp_policy": algo.timestamp_policy, **decoder_parameters(), **scope})
     observation = stage_key("observation", VERSION, {
         "profile": profile.snapshot, "asset_sha256": profile.asset_hashes,
         "template_shapes": [{kind: list(lane.templates[kind].shape[:2]) for kind in KINDS}
                             for lane in profile.lanes],
         "algorithm": algo.observation_parameters(), "opencv_version": cv2.__version__,
-        "numpy_version": np.__version__,
+        "numpy_version": np.__version__, **scope,
     }, (digest(capture),))
     return capture, observation
 
 
 def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Path):
+    from .window import song_window, has_context, in_interval
+    window = song_window(song)
     video_hash = file_hash(song.video)
     capture_key, observation_key = cache_keys(song, profile, algo, video_hash)
     capture_path = root / "capture" / digest(capture_key)
@@ -214,11 +219,11 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
     except CacheError:
         pass
     offset = probe_alignment(song, profile, algo)
-    reader = VideoReader(song.video, start_ms=song.start_ms, end_ms=song.end_ms,
+    reader = VideoReader(song.video, **window['observation'],
                          timestamp_policy=algo.timestamp_policy)
     buffer = []
     previous_signature, repeat_group = None, None
-    count = candidate_count = repeated = 0
+    count = candidate_count = repeated = requested_count = 0
     with CacheWriter(root, capture_key) as capture_writer, CacheWriter(root, observation_key) as writer:
         def flush():
             stamps = [f.stamp for f, _, _ in buffer]
@@ -251,6 +256,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
                 repeated += 1
             previous_signature = observation["signature"]
             count += 1
+            requested_count += int(in_interval(frame.stamp.timestamp_ms, window['requested']))
             candidate_count += len(observation["scores"])
             # Keep only the timestamp alongside features, never full frames.
             frame.bgr = np.empty((0,), dtype=np.uint8)
@@ -259,10 +265,14 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
                 flush()
         if buffer:
             flush()
+        if not requested_count:
+            raise ValueError('no frames in the requested analysis interval')
         # Detect external input mutation before publishing derived evidence.
         if file_hash(song.video) != video_hash:
             raise ValueError("video changed during analysis")
-        capture_cache = capture_writer.commit(reader.metadata)
+        scope_metadata = ({'analysis_window': window, 'requested_frame_count': requested_count,
+                           'auxiliary_frame_count': count - requested_count} if has_context(window) else {})
+        capture_cache = capture_writer.commit({**reader.metadata, **scope_metadata})
         metadata = {
             "video_sha256": video_hash, "capture": reader.metadata,
             "capture_cache_id": capture_cache.id, "alignment_offset_px": list(offset),
@@ -280,6 +290,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
                                "matches an edgeless bright continuation through the following row",
             "barline_columns": ["frame_id", "aligned_y_px", "brightness"],
             "duration_missing_sentinel": -1, "time_unit": "ms since original first frame PTS",
+            **scope_metadata,
         }
         observations = writer.commit(metadata, validate=open_observations)
     return capture_cache, observations, False
@@ -310,6 +321,7 @@ def template_shapes(parameters):
 
 
 def _open_observations(path: Path) -> Cache:
+    from .window import validate_window, in_interval
     cache = Cache(path)
     key = cache.manifest["key"]
     if key["stage"] != "observation" or key["algorithm_version"] != VERSION:
@@ -317,6 +329,12 @@ def _open_observations(path: Path) -> Cache:
     previous_id, previous_ms = -1, -1.0
     count = 0
     metadata = cache.manifest["metadata"]
+    window = key['parameters'].get('analysis_window')
+    if window != metadata.get('analysis_window'):
+        raise CacheError('observation window differs from cache key')
+    if window is not None:
+        validate_window(window)
+    requested_count = 0
     if metadata['profile'] != key['parameters']['profile']:
         raise CacheError('observation profile differs from cache key')
     template_shapes(key['parameters'])
@@ -331,6 +349,10 @@ def _open_observations(path: Path) -> Cache:
     for chunk in cache.chunks():
         ids, timestamps = chunk["frame_id"], chunk["timestamp_ms"]
         n = len(ids)
+        if window is not None:
+            if not in_interval(timestamps, window['observation']).all():
+                raise CacheError('frames outside declared observation window')
+            requested_count += int(in_interval(timestamps, window['requested']).sum())
         if (n == 0 or ids.ndim != 1 or timestamps.shape != (n,)
                 or ids[0] < 0 or previous_id >= 0 and ids[0] != previous_id + 1
                 or timestamps[0] < previous_ms
@@ -364,6 +386,9 @@ def _open_observations(path: Path) -> Cache:
         candidates_count += m
     if count != metadata["frame_count"] or candidates_count != metadata["candidate_count"]:
         raise CacheError("observation frame count mismatch")
+    if window is not None and (not requested_count or requested_count != metadata.get('requested_frame_count')
+                              or count - requested_count != metadata.get('auxiliary_frame_count')):
+        raise CacheError('observation window frame count mismatch')
     return cache
 
 

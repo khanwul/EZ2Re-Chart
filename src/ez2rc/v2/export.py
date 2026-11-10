@@ -33,7 +33,7 @@ def chart_payload(chart: Chart) -> dict:
 def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_ref=None, fusion_ref=None,
                    decode_ref=None, time_projection_ref=None, timing_resolution_ref=None,
                    reference_candidates_ref=None, reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
-                   endpoint_time_ranges_ref=None, relative_beats_ref=None,
+                   endpoint_time_ranges_ref=None, relative_beats_ref=None, analysis_scope_ref=None,
                    pixel_intervals=(), pending_stages=(), candidates=()) -> dict:
     ids = [event.id for event in events]
     if len(ids) != len(set(ids)):
@@ -49,6 +49,7 @@ def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_re
             "origin_adoption_ref": origin_adoption_ref,
             "beat_ranges_ref": beat_ranges_ref,
             **({'relative_beats_ref': relative_beats_ref} if relative_beats_ref is not None else {}),
+            **({'analysis_scope_ref': analysis_scope_ref} if analysis_scope_ref is not None else {}),
             "pending_stages": list(pending_stages), "candidates": list(candidates),
             "events": [asdict(e) for e in sorted(events, key=lambda e: e.id)]}
 
@@ -113,6 +114,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                   time_projection_ref=None, timing_resolution_ref=None, reference_candidates_ref=None,
                   reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
                   endpoint_time_ranges_ref=None, relative_beats_ref=None, relative_beats=None,
+                  analysis_scope_ref=None, analysis_scope=None,
                   pixel_intervals=(), diagnostics=None):
     event_ids = {e.id for e in events}
     if not {n.id for n in (*chart.notes, *chart.unresolved)} <= event_ids:
@@ -130,6 +132,8 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         payload['beat_ranges_ref'] = beat_ranges_ref
     if relative_beats_ref is not None:
         payload['relative_beats_ref'] = relative_beats_ref
+    if analysis_scope_ref is not None:
+        payload['analysis_scope_ref'] = analysis_scope_ref
     write_json(root / "chart.json", payload)
     write_json(root / "artifacts/events.json", events_payload(
         events, observation_ref=observation_ref, motion_ref=motion_ref, fusion_ref=fusion_ref,
@@ -140,6 +144,7 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         origin_adoption_ref=origin_adoption_ref,
         beat_ranges_ref=beat_ranges_ref,
         relative_beats_ref=relative_beats_ref,
+        analysis_scope_ref=analysis_scope_ref,
         pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
     items = "".join(f"<li id='{escape(e.id, quote=True)}'>Lane {e.lane + 1}: "
@@ -161,18 +166,36 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                        f"scope: {escape(position['scope'])}.</p>")
         if decode_ref:
             states = ", ".join(f"{key}: {value}" for key, value in diagnostics['decode'].items())
-            visual += (f"<p>Pixel interval states: {escape(states)}.</p>"
+            coverage = ' (all observed frames)' if analysis_scope is not None else ''
+            visual += (f"<p>Pixel interval states{coverage}: {escape(states)}.</p>"
                        f"<p><a href='{escape(decode_ref, quote=True)}'>Interval candidates and costs</a></p>")
     rows = "".join(f"<tr><td>{p['lane'] + 1}</td><td>{escape(p['status'])}</td>"
                    f"<td>{escape(', '.join(str(c['start_px']) + ' → ' + str(c['end_px']) for c in p['selected_intervals']) or 'noise alternative')}</td>"
                    f"<td>{p['selected_cost']:.3f} / {p['alternative_cost']:.3f}</td>"
-                   f"<td>{escape(', '.join(p.get('review_causes', ())) or '—')}</td></tr>" for p in pixel_intervals)
+                   f"<td>{escape(', '.join(p.get('review_causes', ())) or '—')}</td>"
+                   + (f"<td>{escape(p['analysis_scope'])}</td>" if analysis_scope is not None else '')
+                   + '</tr>' for p in pixel_intervals)
     if time_projection_ref:
         visual += (f"<p><a href='{escape(time_projection_ref, quote=True)}'>Provisional video-time projections</a>. "
                    "These estimates are not calibrated note times.</p>")
     if timing_resolution_ref:
         visual += (f"<p><a href='{escape(timing_resolution_ref, quote=True)}'>Timing decisions and supplied reference</a>. "
                    f"Resolved notes: {len(chart.notes)}; unresolved events: {len(chart.unresolved)}.</p>")
+    if analysis_scope is not None:
+        window = analysis_scope['window']
+        requested, observed = window['requested'], window['observation']
+        counts = {label: sum(c['selected'] and c['scope'] == label for c in analysis_scope['candidates'])
+                  for label in ('requested', 'boundary_uncertain', 'auxiliary_only')}
+        visual += (f"<p>Requested observation window: [{requested['start_ms']}, {requested['end_ms']}) ms; "
+                   f"observation with context: [{observed['start_ms']}, {observed['end_ms']}) ms. "
+                   f"Requested frames: {analysis_scope['requested_frame_count']}; "
+                   f"auxiliary frames: {analysis_scope['auxiliary_frame_count']}. "
+                   "Window membership describes visible evidence, not judgment time. "
+                   f"Selected candidates: {counts['requested']} with requested-frame members, "
+                   f"{counts['boundary_uncertain']} with uncertain boundary membership, "
+                   f"{counts['auxiliary_only']} auxiliary only. "
+                   "Context-only candidates remain in diagnostics; possible boundary associations remain unresolved. "
+                   f"<a href='{escape(analysis_scope_ref, quote=True)}'>Window evidence and candidate scope</a>.</p>")
     if endpoint_time_ranges_ref:
         visual += (f"<p><a href='{escape(endpoint_time_ranges_ref, quote=True)}'>Conditional endpoint time ranges</a>. "
                    "Pixel error components use observed scroll support; missing error bounds stay unknown.</p>")
@@ -213,7 +236,8 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                        + ''.join(relative_rows) + '</table>')
     pixel_table = ("<table><caption>Relative pixel intervals; costs cover the whole lane</caption>"
                    "<tr><th>Lane</th><th>Pixel status</th><th>Start → end (px)</th><th>Selected / alternative</th>"
-                   "<th>Review causes in competing hypotheses</th></tr>"
+                   "<th>Review causes in competing hypotheses</th>"
+                   + ('<th>Window evidence</th>' if analysis_scope is not None else '') + '</tr>'
                    f"{rows}</table>") if rows else ""
     report = ("<!doctype html><html lang='en'><meta charset='utf-8'>"
               f"<title>{escape(chart.metadata.title)} — EZ2Re:Chart</title>"
