@@ -10,8 +10,9 @@ from dataclasses import replace
 
 from .contracts import Chart, Note, Timing, exact_ms, read_ratio
 from .relative_beats import bounds
+from .observed_geometry import LOCALIZATION_SCOPE
 
-VERSION = 'verified-relative-musical-events-5'
+VERSION = 'verified-relative-musical-events-6'
 
 
 def resolve_spatial_chart(chart, events, relative, rhythm, barlines, profile, *, physical_review=None,
@@ -28,6 +29,8 @@ def resolve_spatial_chart(chart, events, relative, rhythm, barlines, profile, *,
         audit['reasons']=['spatial_reference_unavailable']
         return chart,events,audit
     geometry=relative.get('observed_geometry',{})
+    if geometry.get('reviewed_localizations') and physical_review is None:
+        raise ValueError('reviewed localizations require their validated review input')
     proof=relative.get('rhythm_refinement',{})
     reviewed = {}
     if physical_review is not None:
@@ -48,6 +51,10 @@ def resolve_spatial_chart(chart, events, relative, rhythm, barlines, profile, *,
         scoped_verified=not scope_reasons
         audit['calibration_basis']='Explicit measurement verification with matching code, observation and lane/kind scope.'
     if not geometry or geometry.get('status')!='conditional':prerequisites.append('shared_geometry_unavailable')
+    if geometry.get('localization_scope') != LOCALIZATION_SCOPE:
+        prerequisites.append('raw_localization_scope_unverified')
+    if geometry.get('reviewed_localizations') and not scoped_verified:
+        prerequisites.append('reviewed_localization_requires_scoped_verification')
     if proof.get('status')!='conditional' or proof.get('grid')!=rhythm['grid']:
         prerequisites.append('joint_grid_feasibility_unavailable')
     # Selected endpoint unions participate in the common graph, including its

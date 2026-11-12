@@ -129,13 +129,29 @@ error_px = 1.0
             from ez2rc.v2.decode import open_decode,output_events
             from ez2rc.v2.observation import open_observations
             obs=open_observations(first/'artifacts/observations')
-            events,_=output_events(open_decode(first/'artifacts/decode'))
+            decoded=open_decode(first/'artifacts/decode')
+            events,_=output_events(decoded)
             original=Chart(Metadata('game','mode',2,'generated','test'),Timing('150',None,F(1)),
                            unresolved=events,pending_stages=('timing',))
             relative=json.loads((automatic/'artifacts/relative-beats.json').read_text())
             rhythm=json.loads((automatic/'artifacts/rhythm-candidates.json').read_text())
             bars=json.loads((automatic/'artifacts/barline-grid.json').read_text())
             profile=obs.manifest['metadata']['profile']
+            # Older references retain their original reconstruction semantics,
+            # but a profile endpoint bound does not certify every template alias.
+            from ez2rc.v2.motion import open_motion
+            from ez2rc.v2.relative_beats import project_relative_beats
+            from ez2rc.v2.rhythm import RhythmGrid,rhythm_candidates
+            legacy=deepcopy(relative['reference'])
+            legacy['observed_geometry']['version']='observed-spatial-constraints-4'
+            reconstructed_legacy=project_relative_beats(obs,open_motion(first/'artifacts/motion'),decoded,
+                legacy,measure_beats=F(1),rhythm_grid=RhythmGrid((4,)))
+            legacy_grid=rhythm_candidates(reconstructed_legacy,RhythmGrid((4,)))
+            self.assertEqual([r['note_candidates'] for r in legacy_grid['candidates']],
+                             [r['note_candidates'] for r in rhythm['candidates']])
+            candidate,_,audit=resolve_spatial_chart(original,events,reconstructed_legacy,legacy_grid,bars,profile)
+            self.assertEqual(candidate.notes,())
+            self.assertIn('raw_localization_scope_unverified',audit['reasons'])
             for kind in ('profile','physical','dependency','joint','origin','shift','optical','registration'):
                 r,g,p,b=deepcopy(relative),deepcopy(rhythm),deepcopy(profile),deepcopy(bars)
                 if kind=='profile':p['position_calibration']['status']='unverified'

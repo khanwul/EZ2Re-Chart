@@ -18,7 +18,7 @@ from .motion import timeline
 from .motion_dependence import VERSION as DEPENDENCE_VERSION, derive_coordinate_model
 from .storage import reject_constant
 
-VERSION = 'spatial-relative-beats-8'
+VERSION = 'spatial-relative-beats-10'
 
 
 def load_spatial_calibration(request):
@@ -137,11 +137,11 @@ def validate_reference(value):
         request = value['observed_geometry']
         keys = {'version', 'localization_error_px', 'anchor_observations', 'scale', 'endpoint_position_relation'}
         table(request, keys, keys)
-        if request['version'] not in (GEOMETRY_VERSION, 'observed-spatial-constraints-2', 'observed-spatial-constraints-3') or request['scale'] != 'constant':
+        if request['version'] not in (GEOMETRY_VERSION, 'observed-spatial-constraints-2', 'observed-spatial-constraints-3', 'observed-spatial-constraints-4', 'observed-spatial-constraints-5') or request['scale'] != 'constant':
             raise ValueError('unsupported observed geometry model')
         if request['version'] == 'observed-spatial-constraints-2' and any('optical_reference' in e for e in value['endpoint_calibrations']):
             raise ValueError('optical references require the current observed geometry version')
-        if request['version'] != GEOMETRY_VERSION and any('template_registration' in e for e in value['endpoint_calibrations']):
+        if request['version'] not in (GEOMETRY_VERSION, 'observed-spatial-constraints-4', 'observed-spatial-constraints-5') and any('template_registration' in e for e in value['endpoint_calibrations']):
             raise ValueError('template registration requires the current observed geometry version')
         if request['endpoint_position_relation'] != 'same_raw_localization':
             raise ValueError('observed geometry requires shared raw endpoint localization')
@@ -379,15 +379,23 @@ coordinates into exact chart notes or accepted judgment times.
         raise ValueError('spatial reference parent lineage mismatch')
     geometry, geometry_nodes, geometry_diagnostics = None, {}, None
     if 'observed_geometry' in reference:
-        from .observed_geometry import observed_geometry
+        from .observed_geometry import (VERSION as GEOMETRY_VERSION, LOCALIZATION_SCOPE,
+                                        LEGACY_LOCALIZATION_SCOPE, observed_geometry)
         request = reference['observed_geometry']
+        localizations = physical_review.localizations() if physical_review is not None else ()
+        if localizations and request['version'] != GEOMETRY_VERSION:
+            raise ValueError('reviewed localizations require the current observed geometry version')
         geometry, geometry_nodes, geometry_diagnostics = observed_geometry(
             observations, movement, decoded, {a['id']:read_ratio(a['beat']) for a in reference['anchors']},
-            request['anchor_observations'], request['localization_error_px'], reference['endpoint_calibrations'])
+            request['anchor_observations'], request['localization_error_px'], reference['endpoint_calibrations'],
+            localization_scope=(LOCALIZATION_SCOPE if request['version'] in (GEOMETRY_VERSION,'observed-spatial-constraints-5')
+                                else LEGACY_LOCALIZATION_SCOPE), reviewed_localizations=localizations)
         geometry_diagnostics['scale_bounds_px_per_beat'] = [ratio(v) for v in geometry.scale] if geometry.scale else None
         geometry_diagnostics['scale_px_per_beat'] = closed(*geometry.scale) if geometry.status == 'conditional' else None
         geometry_diagnostics['anchor_pair_count'] = geometry.anchor_pair_count
     line = SpatialBeatMap(reference['anchors'], reference['extrapolation']) if geometry is None else None
+    if geometry is None and physical_review is not None and physical_review.localizations():
+        raise ValueError('reviewed localizations require an observed spatial geometry model')
     model = reference.get('coordinate_uncertainty')
     diagnostics = None
     if 'motion_dependence' in reference:

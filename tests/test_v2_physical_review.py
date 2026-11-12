@@ -12,7 +12,7 @@ from ez2rc.v2.decode import lanes, open_decode
 from ez2rc.v2.export import read_chart, read_events
 from ez2rc.v2.motion import open_motion
 from ez2rc.v2.observation import open_observations
-from ez2rc.v2.physical_review import VERSION, load_physical_review
+from ez2rc.v2.physical_review import VERSION, LOCALIZATION_VERSION, load_physical_review
 from ez2rc.v2.runner import execute
 from ez2rc.v2.relative_beats import project_relative_beats
 from ez2rc.v2.rhythm import RhythmGrid, rhythm_candidates
@@ -49,6 +49,91 @@ def save_review(root, value):
 
 
 class PhysicalReviewTest(unittest.TestCase):
+    def test_reviewed_pixels_require_bound_evidence_and_scoped_verification(self):
+        from ez2rc.v2.observation import template_shapes
+        from ez2rc.v2.observed_geometry import search_censored
+        from ez2rc.v2.calibration_verification import VERSION as VERIFY_VERSION,code_fingerprint,measurement_scope
+        from ez2rc.v2.storage import digest
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);song=marked_video(root)
+            song.write_text(song.read_text()+'\n[timing.rhythm_grid]\nsubdivisions = [4]\n')
+            _,first=execute(song,output_root=root/'out')
+            obs=open_observations(first/'artifacts/observations')
+            movement=open_motion(first/'artifacts/motion');decoded=open_decode(first/'artifacts/decode')
+            lane_data=list(lanes(decoded));value=review_for(obs,movement,decoded,lane_data)
+            decision=value['decisions'][0];point=decision['start'];eid=point['endpoint_id']
+            endpoint=next(e for lane in lane_data for e in lane['endpoints'] if e['id']==eid)
+            parameters=obs.manifest['key']['parameters'];profile=obs.manifest['metadata']['profile']
+            shapes=template_shapes(parameters);lane=decision['lane'];roi=profile['lanes'][lane]['roi']
+            chosen=None
+            for chunk in obs.chunks():
+                for index,(frame,lid,seed) in enumerate(chunk['candidate_index']):
+                    oid=f'f{frame}:l{lid}:y{seed}';y=float(chunk['positions'][index,0,1])
+                    if (oid not in endpoint['observation_ids'] or int(chunk['flags'][index,0])&3
+                            or float(chunk['scores'][index,0])<.9 or not roi[1]+3<y<roi[3]-shapes[lane]['tap'][0]-3
+                            or search_censored(int(seed),y,roi,shapes[lane]['tap'][0],parameters['algorithm']['search_radius_px'])):continue
+                    chosen=(oid,int(frame),y);break
+                if chosen:break
+            self.assertIsNotNone(chosen);oid,frame,y=chosen
+            point['witness_observation_ids']=[oid]
+            value.update(schema_version=2,version=LOCALIZATION_VERSION,localizations=[{
+                'endpoint_id':eid,'observation_id':oid,'frame_id':frame,'template_top_interval_px':[y-1,y+1],
+                'visibility':'fully_visible_unoccluded','evidence_ids':['scene-specification']}])
+            review=load_physical_review(save_review(root,value),obs,movement,decoded)
+            self.assertEqual(review.receipt()['localization_count'],1)
+            for change in ('frame','witness','interval','evidence','visibility','duplicate','beat','version'):
+                altered=deepcopy(value);row=altered['localizations'][0]
+                if change=='frame':row['frame_id']+=1
+                if change=='witness':row['observation_id']='f999:l0:y20'
+                if change=='interval':row['template_top_interval_px']=[y+1,y+2]
+                if change=='evidence':row['evidence_ids']=['absent']
+                if change=='visibility':row['visibility']='unknown'
+                if change=='duplicate':altered['localizations']*=2
+                if change=='beat':row['beat']=[1,2]
+                if change=='version':altered.update(schema_version=1,version=VERSION)
+                with self.subTest(change=change),self.assertRaises(ValueError):
+                    load_physical_review(save_review(root,altered),obs,movement,decoded)
+            binding=save_review(root,value)
+            calibration={'format':'ez2rc.spatial-calibration','schema_version':1,'version':'procedural-pixels',
+                'observation_cache_id':obs.id,'motion_cache_id':movement.id,'decode_cache_id':decoded.id,
+                'localization_error_px':1,'endpoint_calibrations':[]}
+            for lane_record in lane_data:
+                for candidate in lane_record['candidates']:
+                    if candidate['selected']:
+                        calibration['endpoint_calibrations'].append({'endpoint_id':candidate['start'],
+                            'candidate_id':candidate['id'],'version':'procedural-template-top',
+                            'offset_px':[0,0],'position_error_px':1})
+            data=json.dumps(calibration).encode();(root/'calibration.json').write_bytes(data)
+            song.write_text(song.read_text()+f'\n[timing.spatial_calibration]\npath = "calibration.json"\nsha256 = "{hashlib.sha256(data).hexdigest()}"\n'
+                            +f'\n[timing.physical_review]\npath = "review.json"\nsha256 = "{binding["sha256"]}"\n')
+            code,conditional=execute(song,output_root=root/'out');self.assertEqual(code,2)
+            relative=json.loads((conditional/'artifacts/relative-beats.json').read_text())
+            audit=json.loads((conditional/'artifacts/spatial-resolution.json').read_text())
+            self.assertEqual(relative['observed_geometry']['reviewed_localizations'],value['localizations'])
+            self.assertIn('reviewed_localization_requires_scoped_verification',audit['reasons'])
+            review.check_relative(relative)
+            tampered=deepcopy(relative);tampered['observed_geometry']['reviewed_localizations']=[]
+            with self.assertRaises(ValueError):review.check_relative(tampered)
+            verification={'format':'ez2rc.calibration-verification','schema_version':1,'version':VERIFY_VERSION,
+                'status':'verified','code_sha256':code_fingerprint(),'scope':measurement_scope(obs,relative),
+                'method':'procedural_measurement','assessor':'procedural renderer',
+                'criteria_sha256':digest({'known_template_and_reviewed_pixel_bounds':True}),
+                'evidence':[{'id':'procedural-renderer','sha256':digest({'known_scene':'marked_video'})}],
+                'limitations':'This generated renderer and its explicit pixel review only.'}
+            data=json.dumps(verification).encode();(root/'verification.json').write_bytes(data)
+            song.write_text(song.read_text()+f'\n[timing.calibration_verification]\npath = "verification.json"\nsha256 = "{hashlib.sha256(data).hexdigest()}"\n')
+            code,confirmed=execute(song,output_root=root/'out');self.assertEqual(code,0,(confirmed/'run.json').read_text())
+            chart=read_chart(confirmed/'chart.json')
+            self.assertEqual([(n['lane'],F(*n['start_beat'])) for n in chart['notes']],
+                             [(0,F(1,2)),(1,F(3,4)),(0,F(3,2)),(1,F(11,4)),(0,F(7,2)),(1,F(19,4))])
+            for name in ('video.mkv','profile.toml','note.png','head.png','tail.png'):(root/name).unlink()
+            with patch('ez2rc.v2.capture.av.open',side_effect=AssertionError('no source decoding')):
+                code,reconstructed=execute(song,output_root=root/'out',observation_cache=first/'artifacts/observations')
+            self.assertEqual(code,0)
+            for artifact in ('chart.json','artifacts/events.json','artifacts/physical-review.json',
+                             'artifacts/relative-beats.json','artifacts/spatial-resolution.json'):
+                self.assertEqual((confirmed/artifact).read_bytes(),(reconstructed/artifact).read_bytes())
+
     def test_review_with_independent_spatial_reference_preserves_conditional_output(self):
         from ez2rc.v2.contracts import Chart, Event, Metadata, Timing
         obs,movement,decoded,clock,lane=scene()

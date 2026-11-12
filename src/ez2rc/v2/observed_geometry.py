@@ -10,7 +10,9 @@ from .observation import template_shapes
 from .projection_edges import measure_edge, measure_registration, reference_interval, validate_registration
 from .spatial_constraints import ConstantSpacingMap
 
-VERSION = 'observed-spatial-constraints-4'
+VERSION = 'observed-spatial-constraints-6'
+LOCALIZATION_SCOPE = 'selected_endpoint_kind'
+LEGACY_LOCALIZATION_SCOPE = 'retained_template_responses'
 
 
 def search_censored(seed, y, roi, height, radius):
@@ -49,16 +51,25 @@ def _raw(frame, lane, kind, seed):
 
 
 def observed_geometry(observations, movement, decoded, anchors, anchor_observations, error_px,
-                      optical_calibrations=()):
+                      optical_calibrations=(), *, localization_scope=LOCALIZATION_SCOPE,
+                      reviewed_localizations=()):
     """Condition on retained links and selected physical endpoint hypotheses.
 
-    Every usable raw localization has its own bound relative to its displayed
-    frame. Shared frames and object identities are variables, not independent
-    error terms. No forecast displacement is inserted across a missing link.
+    A raw template response receives a location bound only under a selected
+    endpoint hypothesis of the same kind. Correlation alone does not identify
+    the physical feature to which a template's position error applies. Other
+    responses remain in the observations and decode alternatives.
+
+    Shared frames and object identities are variables, not independent error
+    terms. No forecast displacement is inserted across a missing link. The
+    selected identities and the declared error bound remain assumptions;
+    restricting their scope does not verify either one.
     """
     error = exact_ms(error_px)
     if error < 0:
         raise ValueError('localization bound must be nonnegative')
+    if localization_scope not in (LOCALIZATION_SCOPE, LEGACY_LOCALIZATION_SCOPE):
+        raise ValueError('unsupported raw localization scope')
     clock = timeline(movement)
     states = dict(zip(map(int, clock['frame_id']), map(int, clock['status'])))
     parents = dict(zip(map(int, clock['frame_id']), map(int, clock['reference_frame'])))
@@ -96,6 +107,18 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
             key = _raw(frame,lane,kind,seed)
             union.find(key); values.append(key)
         members[eid] = values
+    reviewed = {}
+    for row in reviewed_localizations:
+        eid = row['endpoint_id']
+        if eid not in members:
+            raise ValueError('reviewed localization does not bind a selected endpoint')
+        frame,lane,seed = [int(v[1:]) for v in row['observation_id'].split(':')]
+        key = _raw(frame,lane,KINDS.index(endpoints[eid]['kind']),seed)
+        if key not in members[eid] or key in reviewed:
+            raise ValueError('reviewed localization witness mismatch or duplicate')
+        reviewed[key] = row
+    if reviewed and localization_scope != LOCALIZATION_SCOPE:
+        raise ValueError('reviewed localizations require selected endpoint scope')
     optical = {e['endpoint_id']: e for e in optical_calibrations if 'optical_reference' in e}
     registrations = {e['endpoint_id']: e for e in optical_calibrations if 'template_registration' in e}
     requests = {'optical_reference':optical, 'template_registration':registrations}
@@ -118,6 +141,7 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
             for key in members[eid]:
                 requested_raw.setdefault(key, []).append((kind,eid))
     needed, positions, excluded = set(union.parents), {}, Counter()
+    selected_raw = {key for values in members.values() for key in values}
     for chunk in observations.chunks():
         frame_rows = {int(f): i for i, f in enumerate(chunk['frame_id'])}
         for index, (frame,lane,seed) in enumerate(chunk['candidate_index']):
@@ -125,8 +149,11 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
                 key = _raw(int(frame),int(lane),kind,int(seed))
                 if key not in needed:
                     continue
+                if localization_scope == LOCALIZATION_SCOPE and key not in selected_raw:
+                    excluded['outside_selected_endpoint_kind'] += 1
+                    continue
                 flag, score = int(chunk['flags'][index,kind]), float(chunk['scores'][index,kind])
-                if flag & 3 or score < threshold:
+                if flag & 1 or flag & 2 and key not in reviewed or score < threshold:
                     excluded['clipped_effect_or_low_score'] += 1
                     continue
                 y = exact_ms(float(chunk['positions'][index,kind,1]))
@@ -135,6 +162,10 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
                     excluded['finite_search_boundary'] += 1
                     continue
                 positions[key] = int(frame), y
+                if key in reviewed:
+                    lower,upper = map(exact_ms,reviewed[key]['template_top_interval_px'])
+                    if not lower <= y-error <= y+error <= upper:
+                        raise ValueError('reviewed interval understates the declared localization bound')
                 for method, eid in requested_raw.get(key, ()):
                     previous = measurements[method][eid].get(int(frame))
                     if previous is not None and previous['score'] >= score:
@@ -148,6 +179,8 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
                     measurements[method][eid][int(frame)] = {
                         'frame_id': int(frame), 'observation_id': f'f{frame}:l{lane}:y{seed}',
                         'score': score, **measurement}
+    if reviewed.keys() - positions.keys():
+        raise ValueError('reviewed localization remains unusable under the observation contract')
     endpoint_roots = {}
     for eid, values in members.items():
         usable = [v for v in values if v in positions]
@@ -159,7 +192,9 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
     graph, nominal = DifferenceGraph(), {}
     for key, (frame,y) in positions.items():
         at, point = 'frame:'+str(frame), 'landmark:'+union.find(key)
-        graph.bound(at,point,judge-y-error,judge-y+error,key)
+        lower,upper = (tuple(map(exact_ms,reviewed[key]['template_top_interval_px']))
+                       if key in reviewed else (y-error,y+error))
+        graph.bound(at,point,judge-upper,judge-lower,key)
         nominal[at] = scroll[frame]
         nominal.setdefault(point,scroll[frame]+judge-y)
     for i, frame in enumerate(clock['frame_id']):
@@ -216,12 +251,18 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
                    'decode_cache_id': decoded.id, 'status': model.status,
                    'nodes': len(graph.edges), 'edges': sum(map(len,graph.edges.values())),
                    'raw_observations': len(positions), 'linked_pairs': linked_pairs,
+                   'localization_scope': localization_scope,
                    'excluded_observations': dict(excluded),
                    'unbound_endpoint_ids': sorted(set(endpoints)-destinations.keys()),
                    'assumptions': ['retained_landmark_associations', 'selected_endpoint_identity',
                                    'declared_raw_localization_bound', 'numbered_barline_identity',
                                    'constant_positive_spatial_scale'],
                    'verified': False}
+    if reviewed:
+        diagnostics['reviewed_localizations'] = list(reviewed.values())
+        diagnostics['reviewed_localization_semantics'] = (
+            'Explicit visibility and template-top intervals bound to raw witnesses; '
+            'no narrowing of the declared localization error and no calibration promotion.')
     if optical:
         diagnostics['optical_endpoints'] = optical_diagnostics
         diagnostics['assumptions'].extend(['declared_optical_landmark_relation',
