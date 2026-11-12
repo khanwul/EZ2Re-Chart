@@ -12,10 +12,23 @@ from pathlib import Path
 
 from .config import number, string, table
 from .contracts import exact_ms, ratio
-from .physical_review import checksum
+from .physical_review import LOCALIZATION_VERSION, checksum
 from .storage import canonical, digest, file_hash, reject_constant
 
-VERSION = 'scoped-calibration-verification-1'
+VERSION = 'scoped-calibration-verification-2'
+
+
+def reviewed_localization_policy(relative):
+    """Automatic visibility exclusions and explicit pixel reviews differ in scope."""
+    return (LOCALIZATION_VERSION if relative.get('observed_geometry', {}).get('reviewed_localizations')
+            else 'automatic_only')
+
+
+def reviewed_localization_scope(relative):
+    points = {p['endpoint_id']:(row['lane'],p['kind']) for row in relative['candidates']
+              for p in row['endpoints'].values() if 'kind' in p}
+    used = {points[r['endpoint_id']] for r in relative.get('observed_geometry', {}).get('reviewed_localizations', [])}
+    return [{'lane':lane,'kind':kind} for lane,kind in sorted(used)]
 
 
 def code_fingerprint():
@@ -54,6 +67,8 @@ def measurement_scope(observations, relative):
             'geometry_version':request['version'], 'scale':request['scale'],
             'endpoint_position_relation':request['endpoint_position_relation'],
             'localization_error_px':ratio(exact_ms(request['localization_error_px'])),
+            'reviewed_localization_policy':reviewed_localization_policy(relative),
+            'reviewed_localization_scope':reviewed_localization_scope(relative),
             'endpoint_definitions':measurement_definitions(relative)}
 
 
@@ -82,7 +97,9 @@ class CalibrationVerification:
         actual = {**json.loads(self.observed_scope),'coordinate':'first_barline_zero',
                   'geometry_version':request['version'],'scale':request['scale'],
                   'endpoint_position_relation':request['endpoint_position_relation'],
-                  'localization_error_px':ratio(exact_ms(request['localization_error_px']))}
+                  'localization_error_px':ratio(exact_ms(request['localization_error_px'])),
+                  'reviewed_localization_policy':reviewed_localization_policy(relative),
+                  'reviewed_localization_scope':reviewed_localization_scope(relative)}
         if actual != {k:v for k,v in scope.items() if k!='endpoint_definitions'}:
             return ['calibration_verification_geometry_scope_mismatch']
         declared={(r['lane'],r['kind']):r['definition'] for r in scope['endpoint_definitions']}
@@ -122,7 +139,8 @@ def load_calibration_verification(request, observations):
         seen.add(item['id'])
     scope=value['scope']
     keys={'observation_parameters_sha256','alignment_offset_px','coordinate','geometry_version','scale',
-          'endpoint_position_relation','localization_error_px','endpoint_definitions'}
+          'endpoint_position_relation','localization_error_px','reviewed_localization_policy',
+          'reviewed_localization_scope','endpoint_definitions'}
     table(scope,keys,keys)
     observed=observation_scope(observations)
     if any(scope[k]!=v for k,v in observed.items()):
@@ -133,12 +151,26 @@ def load_calibration_verification(request, observations):
     from .observed_geometry import VERSION as GEOMETRY_VERSION
     if scope['geometry_version']!=GEOMETRY_VERSION:
         raise ValueError('verified geometry version changed')
+    if scope['reviewed_localization_policy'] not in ('automatic_only',LOCALIZATION_VERSION):
+        raise ValueError('unsupported verified localization review policy')
     from .contracts import read_ratio
     if read_ratio(scope['localization_error_px'])<0:
         raise ValueError('invalid verified localization error')
     if not isinstance(scope['endpoint_definitions'],list) or not scope['endpoint_definitions']:
         raise ValueError('verification requires covered endpoint definitions')
     seen=set();lane_count=len(observations.manifest['metadata']['profile']['lanes'])
+    reviewed_scope=scope['reviewed_localization_scope']
+    if (not isinstance(reviewed_scope,list) or
+            bool(reviewed_scope)!=(scope['reviewed_localization_policy']==LOCALIZATION_VERSION)):
+        raise ValueError('verified localization review scope does not match its policy')
+    for item in reviewed_scope:
+        table(item,{'lane','kind'},{'lane','kind'})
+        if type(item['lane']) is not int or not 0<=item['lane']<lane_count or item['kind'] not in ('tap','head','tail'):
+            raise ValueError('invalid verified localization review scope')
+        identity=item['lane'],item['kind']
+        if identity in seen:raise ValueError('duplicate verified localization review scope')
+        seen.add(identity)
+    seen=set()
     for item in scope['endpoint_definitions']:
         table(item,{'lane','kind','definition'},{'lane','kind','definition'})
         if type(item['lane']) is not int or not 0<=item['lane']<lane_count or item['kind'] not in ('tap','head','tail'):

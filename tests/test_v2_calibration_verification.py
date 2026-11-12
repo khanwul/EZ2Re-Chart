@@ -110,7 +110,7 @@ class CalibrationVerificationTest(unittest.TestCase):
                                                        calibration_verification=verification)
                     self.assertEqual(result.notes,())
                     self.assertEqual(audit['accepted_note_count'],0)
-            for kind in ('code','observation','alignment','status','evidence','duplicate','labels','definition'):
+            for kind in ('code','observation','alignment','status','evidence','duplicate','labels','definition','policy','missing_policy','review_scope'):
                 changed=deepcopy(value)
                 if kind=='code':changed['code_sha256']='0'*64
                 if kind=='observation':changed['scope']['observation_parameters_sha256']='0'*64
@@ -120,6 +120,9 @@ class CalibrationVerificationTest(unittest.TestCase):
                 if kind=='duplicate':changed['scope']['endpoint_definitions']*=2
                 if kind=='labels':changed['scope']['note_beats']=[[1,2]]
                 if kind=='definition':changed['scope']['endpoint_definitions'][0]['definition']['candidate_id']='c1'
+                if kind=='policy':changed['scope']['reviewed_localization_policy']='all_observations'
+                if kind=='missing_policy':changed['scope'].pop('reviewed_localization_policy')
+                if kind=='review_scope':changed['scope']['reviewed_localization_scope']=[{'lane':0,'kind':'tap'}]
                 with self.subTest(invalid=kind),self.assertRaises(ValueError):load_calibration_verification(request(changed),obs)
             changed=deepcopy(value);changed['scope']['endpoint_definitions'].pop()
             partial=load_calibration_verification(request(changed),obs)

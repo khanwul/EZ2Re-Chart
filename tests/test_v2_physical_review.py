@@ -52,7 +52,8 @@ class PhysicalReviewTest(unittest.TestCase):
     def test_reviewed_pixels_require_bound_evidence_and_scoped_verification(self):
         from ez2rc.v2.observation import template_shapes
         from ez2rc.v2.observed_geometry import search_censored
-        from ez2rc.v2.calibration_verification import VERSION as VERIFY_VERSION,code_fingerprint,measurement_scope
+        from ez2rc.v2.calibration_verification import (VERSION as VERIFY_VERSION,code_fingerprint,
+                                                       measurement_scope,load_calibration_verification)
         from ez2rc.v2.storage import digest
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);song=marked_video(root)
@@ -120,6 +121,32 @@ class PhysicalReviewTest(unittest.TestCase):
                 'criteria_sha256':digest({'known_template_and_reviewed_pixel_bounds':True}),
                 'evidence':[{'id':'procedural-renderer','sha256':digest({'known_scene':'marked_video'})}],
                 'limitations':'This generated renderer and its explicit pixel review only.'}
+            self.assertEqual(verification['scope']['reviewed_localization_policy'],LOCALIZATION_VERSION)
+            self.assertEqual(verification['scope']['reviewed_localization_scope'],[{'lane':lane,'kind':endpoint['kind']}])
+            automatic=deepcopy(verification);automatic['scope']['reviewed_localization_policy']='automatic_only'
+            automatic['scope']['reviewed_localization_scope']=[]
+            data=json.dumps(automatic).encode();path=root/'automatic-verification.json';path.write_bytes(data)
+            automatic_proof=load_calibration_verification(
+                {'path':str(path),'sha256':hashlib.sha256(data).hexdigest()},obs)
+            from ez2rc.v2.decode import output_events
+            from ez2rc.v2.contracts import Chart,Metadata,Timing
+            from ez2rc.v2.spatial_resolution import resolve_spatial_chart
+            events,_=output_events(decoded)
+            original=Chart(Metadata('game','mode',2,'generated','test'),Timing('150',None,F(1)),
+                           unresolved=events,pending_stages=('timing',))
+            withheld,_,audit=resolve_spatial_chart(original,events,relative,
+                json.loads((conditional/'artifacts/rhythm-candidates.json').read_text()),
+                json.loads((conditional/'artifacts/barline-grid.json').read_text()),profile,
+                physical_review=review,calibration_verification=automatic_proof)
+            self.assertEqual(withheld.notes,())
+            self.assertIn('calibration_verification_geometry_scope_mismatch',audit['reasons'])
+            self.assertIn('reviewed_localization_requires_scoped_verification',audit['reasons'])
+            other_lane=deepcopy(verification)
+            other_lane['scope']['reviewed_localization_scope'][0]['lane']=1-lane
+            data=json.dumps(other_lane).encode();path=root/'other-lane-verification.json';path.write_bytes(data)
+            other_proof=load_calibration_verification(
+                {'path':str(path),'sha256':hashlib.sha256(data).hexdigest()},obs)
+            self.assertEqual(other_proof.check_relative(relative),['calibration_verification_geometry_scope_mismatch'])
             data=json.dumps(verification).encode();(root/'verification.json').write_bytes(data)
             song.write_text(song.read_text()+f'\n[timing.calibration_verification]\npath = "verification.json"\nsha256 = "{hashlib.sha256(data).hexdigest()}"\n')
             code,confirmed=execute(song,output_root=root/'out');self.assertEqual(code,0,(confirmed/'run.json').read_text())
