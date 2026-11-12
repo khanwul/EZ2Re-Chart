@@ -7,7 +7,7 @@ from ez2rc.v2.decode import BodyEvidence, endpoint_sites, summarize_lane
 
 def scene(points, bodies=(), *, unavailable=(), occluded=(), absent=(), bounds=(0, 200),
           flags=None, errors=(2., 4., 6.), config=None, ambiguous_motion=False,
-          calibration_errors=(None, None, None), body_weight=1.):
+          calibration_errors=(None, None, None), body_weight=1., foreground=None, interior=None):
     config = config or DecodeConfig()
     n = len(points)
     frame_count = len(errors)
@@ -21,6 +21,10 @@ def scene(points, bodies=(), *, unavailable=(), occluded=(), absent=(), bounds=(
               'endpoint_weight': np.tile(weights, (frame_count, 1)),
               'endpoint_error_px': np.repeat(np.array(errors), n)[:, None] * np.ones((n * frame_count, 3)),
               'endpoint_group': index[:, 0]}
+    if foreground is not None:
+        ledger['endpoint_foreground'] = np.tile(foreground, (frame_count, 1))
+    if interior is not None:
+        ledger['endpoint_peak_interior'] = np.tile(np.asarray(interior, bool), (frame_count, 1))
     clock = {'frame_id': np.arange(frame_count), 'error_px': np.array(errors),
              'status': np.full(frame_count, 3 if ambiguous_motion else 1)}
     meta = {'grid_px': 1., 'endpoint_timing_error_px': list(calibration_errors),

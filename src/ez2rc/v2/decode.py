@@ -22,7 +22,7 @@ from .motion import STATUS, timeline
 from .observation import template_shapes
 from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_key
 
-VERSION = "lane-interval-dp-5"
+VERSION = "lane-interval-dp-10"
 KINDS = ("tap", "head", "tail")
 
 
@@ -237,7 +237,7 @@ def _clusters(q, radius):
         at = end
 
 
-def _associated_clusters(anchor, primary, scores, frames, usable, config):
+def _associated_clusters(anchor, primary, scores, frames, usable, config, interior=None):
     """Anchor sites on usable peaks before attaching weak observations.
 
     Weak rows cannot set the cut between two strong observations. A site's
@@ -269,7 +269,7 @@ def _associated_clusters(anchor, primary, scores, frames, usable, config):
                 continue
             rows.append(int(i)); peaks[key] = anchor[i]; assigned[i] = True
             lower, upper = a, b
-        groups.append({'rows': rows, 'center': float(np.median(list(peaks.values()))),
+        groups.append({'rows': rows, 'peaks': peaks, 'center': float(np.median(list(peaks.values()))),
                        'lower': lower, 'upper': upper})
     groups.sort(key=lambda g: g['center'])
     centers = np.array([g['center'] for g in groups])
@@ -279,6 +279,18 @@ def _associated_clusters(anchor, primary, scores, frames, usable, config):
         hi = np.searchsorted(centers, anchor[i] + diameter, side='right')
         choices = [j for j in range(lo, hi) if
                    max(groups[j]['upper'], anchor[i]) - min(groups[j]['lower'], anchor[i]) <= diameter]
+        # A censored search response can be associated using a same-frame
+        # interior maximum even when accumulated motion spreads the group's
+        # other frames. Such a response does not widen its anchor support.
+        witnessed = []
+        if interior is not None and not interior[i, primary[i]]:
+            key = (int(frames[i]), int(primary[i]))
+            witnessed = [j for j in range(lo, hi) if key in groups[j]['peaks']
+                         and abs(groups[j]['peaks'][key]-anchor[i]) <= diameter]
+        if len(witnessed) == 1:
+            g = groups[witnessed[0]]
+            g['rows'].append(int(i)); assigned[i] = True
+            continue
         if choices:
             j = min(choices, key=lambda j: (abs(centers[j] - anchor[i]), j))
             g = groups[j]
@@ -290,6 +302,45 @@ def _associated_clusters(anchor, primary, scores, frames, usable, config):
         rows = remaining[cluster]
         result.append((rows, float(np.median(anchor[rows])), 'weak_only'))
     return sorted(result, key=lambda item: (item[1], int(item[0].min())))
+
+
+def endpoint_foreground(chunk, lane, heights, top, threshold):
+    """Amplitude evidence at each matched patch, independent of correlation.
+
+    Normalized correlation is invariant to amplitude and can match nearly
+    black compression texture. Retained row projections supply a separate
+    bounded support factor, using the observation's existing brightness scale.
+    Average over the matched height: one bright scanline does not establish
+    foreground support for an entire template patch. No row or kind hypothesis
+    is discarded.
+    """
+    indices = np.flatnonzero(chunk['candidate_index'][:, 1] == lane)
+    result = np.ones((len(indices), 3))
+    if threshold <= 0:
+        return result
+    frames = {int(f): i for i, f in enumerate(chunk['frame_id'])}
+    for row, index in enumerate(indices):
+        projection = chunk['projection'][frames[int(chunk['candidate_index'][index, 0])], lane]
+        for kind, height in enumerate(heights):
+            y = int(chunk['positions'][index, kind, 1])-top
+            patch = projection[max(0, y):min(len(projection), y+height)]
+            result[row, kind] = min(1., max(0., float(patch.mean()))/threshold) if len(patch) else 0.
+    return result
+
+
+def _kind_modes(rows, kind, ledger, scores, flags, frames, interior, config):
+    """Apply the same peak association to each retained kind interpretation.
+
+    A weak attachment must not move a mode boundary and split the strong
+    localizations it was attached to. Distinct co-observed interior maxima
+    still form separate modes, including for a non-winning kind.
+    """
+    usable = (((flags[rows, kind] & 11) == 0)
+              & (ledger['endpoint_weight'][rows, kind] > 0) & interior[rows, kind])
+    groups = _associated_clusters(ledger['endpoint_q'][rows, kind], np.full(len(rows), kind),
+                                  scores[rows], frames[rows], usable, config, interior[rows])
+    for indices, _, _ in groups:
+        yield rows[indices]
 
 
 def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
@@ -304,9 +355,11 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
     clock_index = np.searchsorted(clock['frame_id'], frames)
     at = np.arange(len(scores))
     interior = ledger.get('endpoint_peak_interior', np.ones((len(scores), 3), bool))
-    usable = (((flags[at, primary] & 11) == 0) & (ledger['endpoint_weight'][at, primary] > 0)
-              & interior[at, primary])
-    for cluster, center, association in _associated_clusters(anchor, primary, scores, frames, usable, config):
+    foreground = ledger.get('endpoint_foreground', np.ones((len(scores), 3)))
+    association_usable = (((flags[at, primary] & 11) == 0) & (ledger['endpoint_weight'][at, primary] > 0)
+                          & interior[at, primary])
+    support_scores = scores[:, :3] * foreground
+    for cluster, center, association in _associated_clusters(anchor, primary, support_scores, frames, association_usable, config, interior):
         # A tail and a distinct co-observed onset may touch. Tap/head are
         # competing onsets and stay exclusive, as do same-kind duplicate seeds.
         # Across frames, a changing winning kind alone does not split a site.
@@ -317,13 +370,15 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
             if not len(rows):
                 continue
             site_id = f'l{lane}:s{len(sites)}'
+            strong_rows = rows[association_usable[rows] & (support_scores[rows, primary[rows]] >= config.association_similarity)]
+            support_rows = strong_rows if len(strong_rows) else rows
             site = {'id': site_id, 'anchor_px': center, 'association': association,
-                    'anchor_range_px': [float(anchor[rows].min()), float(anchor[rows].max())],
+                    'anchor_range_px': [float(anchor[support_rows].min()), float(anchor[support_rows].max())],
+                    'observed_anchor_range_px': [float(anchor[rows].min()), float(anchor[rows].max())],
                     'primary_kind': KINDS[int(np.argmax(np.bincount(primary[rows], minlength=3)))],
                     'endpoint_ids': []}
             for kind in range(3):
-                for mode in _clusters(ledger['endpoint_q'][rows, kind], config.endpoint_radius_px):
-                    indices = rows[mode]
+                for indices in _kind_modes(rows, kind, ledger, support_scores, flags, frames, interior, config):
                     # One best contribution per displayed group, regardless of
                     # duplicate seeds or repeated observation frames.
                     order = sorted(indices, key=lambda i: (int(ledger['endpoint_group'][i]),
@@ -338,8 +393,15 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
                     weights = np.minimum(ledger['endpoint_weight'][reps, kind], meta.get('repeat_group_cap', 1.))
                     total = float(weights.sum())
                     score = float(np.dot(weights, scores[reps, kind]) / total) if total else float(scores[reps, kind].max())
+                    supported_score = (float(np.clip(np.dot(weights, scores[reps, kind] * foreground[reps, kind]) / total, 0., 1.))
+                                       if total else 0.)
                     usable = ((flags[indices, kind] & 11) == 0) & (ledger['endpoint_weight'][indices, kind] > 0)
                     localized = indices[usable]
+                    # A finite search-window maximum can point toward a peak
+                    # outside that window. Keep its observed coordinate and
+                    # support, but require an interior witness before claiming
+                    # that this endpoint has a usable localization.
+                    has_localization = bool(np.any(usable & interior[indices, kind]))
                     coords = ledger['endpoint_q'][localized if len(localized) else indices, kind]
                     location_reps, location_groups = [], set()
                     for i in order:
@@ -348,20 +410,29 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
                             location_reps.append(i); location_groups.add(group)
                     if not location_reps:
                         location_reps = representatives
+                    ordered_locations = sorted(location_reps, key=lambda i: (ledger['endpoint_q'][i, kind], int(i)))
+                    middle = len(ordered_locations) // 2
+                    coordinate_rows = (ordered_locations[middle:middle+1] if len(ordered_locations) % 2 else
+                                       ordered_locations[middle-1:middle+1])
                     q = float(np.median(ledger['endpoint_q'][location_reps, kind]))
                     refs = [f'f{int(frames[i])}:l{lane}:y{int(ledger["endpoint_index"][i, 2])}' for i in indices]
                     shared = float(clock['error_px'][clock_index[indices]].max())
                     error = float(ledger['endpoint_error_px'][indices, kind].max())
                     ep = {'id': f'{site_id}:{KINDS[kind]}:{len(site["endpoint_ids"])}', 'site_id': site_id,
-                          'kind': KINDS[kind], 'q_px': q if len(localized) else None,
+                          'kind': KINDS[kind], 'q_px': q if has_localization else None,
                           'observed_q_px': q, 'observed_range_px': [float(coords.min()), float(coords.max())],
                           'score': score, 'weight': total, 'group_count': len(seen),
-                          'utility': float(np.clip(score, 0., 1.)) * min(1., total / config.support_weight),
+                          'foreground_supported_score': supported_score,
+                          'utility': supported_score * min(1., total / config.support_weight),
                           'shared_motion_error_px': shared, 'fusion_error_px': error,
                           'localization_error_px': meta.get('observation_position_error_px'),
                           'calibration_error_px': meta['endpoint_timing_error_px'][kind],
                           'motion_ambiguous': bool(np.any(clock['status'][clock_index[indices]] == STATUS['ambiguous'])),
                           'motion_frame_ids': sorted(set(int(frames[i]) for i in indices)),
+                          'coordinate_observations': [
+                              {'observation_id': f'f{int(frames[i])}:l{lane}:y{int(ledger["endpoint_index"][i, 2])}',
+                               'frame_id': int(frames[i]), 'q_px': float(ledger['endpoint_q'][i, kind]),
+                               'weight': [1, len(coordinate_rows)]} for i in coordinate_rows],
                           'observation_ids': refs,
                           'search_boundary_observation_ids': [ref for ref, i in zip(refs, indices)
                                                               if not interior[i, kind]],
@@ -369,7 +440,7 @@ def endpoint_sites(lane, ledger, scores, flags, clock, meta, config):
                               if ledger['endpoint_weight'][i, kind] > 0
                               for b in (int(np.floor(ledger['endpoint_q'][i, kind] / meta['grid_px'])),
                                         int(np.ceil(ledger['endpoint_q'][i, kind] / meta['grid_px'])))})],
-                          'reason': None if len(localized) else 'no unclipped, usable endpoint localization'}
+                          'reason': None if has_localization else 'no unclipped, interior endpoint localization'}
                     endpoints.append(ep); site['endpoint_ids'].append(ep['id'])
             sites.append(site)
     return sites, endpoints
@@ -621,10 +692,18 @@ def _lane_input(observations, fusion, lane):
     # Only scalar endpoint records and one lane of cells remain resident. Dense
     # per-frame images/projections are discarded as each source chunk is read.
     obs = {k: [] for k in ('candidate_index', 'scores', 'flags', 'positions')}
+    foreground = []
+    parameters = observations.manifest['key']['parameters']
+    shapes = template_shapes(parameters)
+    algorithm = parameters.get('algorithm', {})
+    profile_lane = observations.manifest['metadata']['profile']['lanes'][lane]
     for chunk in observations.chunks():
         keep = chunk['candidate_index'][:, 1] == lane
         for k in obs:
             obs[k].append(chunk[k][keep])
+        if shapes is not None and 'brightness_threshold' in algorithm:
+            foreground.append(endpoint_foreground(chunk, lane, [shapes[lane][k][0] for k in KINDS],
+                                                   profile_lane['roi'][1], algorithm['brightness_threshold']))
     obs = {k: np.concatenate(v) for k, v in obs.items()}
     ledger, cells = {}, {}
     for chunk in fusion.chunks():
@@ -636,6 +715,8 @@ def _lane_input(observations, fusion, lane):
     cells = {k: np.concatenate(v) for k, v in cells.items()}
     if not np.array_equal(obs['candidate_index'], ledger['endpoint_index']):
         raise ValueError('decode endpoint ledger does not match original observations')
+    if foreground:
+        ledger['endpoint_foreground'] = np.concatenate(foreground)
     # A maximum at the edge of a seed's search window is not evidence of a
     # second local peak: another seed may see the higher adjacent maximum.
     # Preserve it, but do not let it split a supported site. This uses raw
@@ -702,6 +783,7 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
                               'grid_px': meta['grid_px'],
                               'coordinate': 'relative scroll pixels; never milliseconds or beats',
                               'cost_semantics': 'heuristic additive costs, not probabilities',
+                              'endpoint_support_policy': 'correlation_with_matched_patch_brightness_support',
                               'body_overlap_policy': ('shared_supported_template_footprints'
                                   if template_shapes(observations.manifest['key']['parameters']) is not None
                                   else 'unavailable_template_geometry'),
@@ -774,6 +856,8 @@ def _validate_lane(lane, data, config, grid):
                 or e['id'] not in sites[e['site_id']]['endpoint_ids']
                 or e['observed_range_px'][0] > e['observed_range_px'][1]
                 or not 0 <= e['utility'] <= 1 or e['weight'] < 0
+                or not 0 <= e['foreground_supported_score'] <= 1
+                or e['utility'] != e['foreground_supported_score'] * min(1., e['weight']/config.support_weight)
                 or e['shared_motion_error_px'] < 0 or e['fusion_error_px'] < 0
                 or not e['observed_range_px'][0] <= e['observed_q_px'] <= e['observed_range_px'][1]
                 or not set(e['search_boundary_observation_ids']) <= set(e['observation_ids'])):
@@ -782,6 +866,16 @@ def _validate_lane(lane, data, config, grid):
             if ref in owners and owners[ref] != e['site_id']:
                 raise CacheError('observation shared between endpoint sites')
             owners[ref] = e['site_id']
+        support = e['coordinate_observations']
+        if (not isinstance(support, list) or len(support) not in (1, 2)
+                or len({p['observation_id'] for p in support}) != len(support)
+                or any(p['observation_id'] not in e['observation_ids']
+                       or type(p['frame_id']) is not int or p['frame_id'] not in e['motion_frame_ids']
+                       or not p['observation_id'].startswith(f"f{p['frame_id']}:l{lane}:")
+                       or p['weight'] != [1, len(support)]
+                       or type(p['q_px']) not in (int, float) or not math.isfinite(p['q_px']) for p in support)
+                or sum(p['q_px'] for p in support) / len(support) != e['observed_q_px']):
+            raise CacheError('invalid endpoint coordinate observations')
     used, last = set(), -1
     for c in sorted(cs.values(), key=lambda c: c['lo']):
         if (not np.isfinite(c['cost']) or not 0 <= c['lo'] <= c['hi'] < data['token_count']
@@ -884,6 +978,8 @@ def open_decode(path, expected_key=None):
                 raise CacheError('unsupported decode cache/lineage')
             if meta.get('body_reward_policy') != 'shared_contiguous_run_scale':
                 raise CacheError('unsupported body reward policy')
+            if meta.get('endpoint_support_policy') != 'correlation_with_matched_patch_brightness_support':
+                raise CacheError('unsupported endpoint support policy')
             grid = meta['grid_px']
             if not math.isfinite(grid) or grid <= 0:
                 raise CacheError('invalid decode grid')

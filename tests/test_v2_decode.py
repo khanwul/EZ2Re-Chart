@@ -184,6 +184,116 @@ class IntervalDPTest(unittest.TestCase):
         # The same two coordinates with independent interior maxima stay split.
         self.assertEqual(len(associate(rows)[0]), 2)
 
+    def test_same_frame_censored_response_does_not_expand_motion_anchor(self):
+        rows = [(0, 20, [.99, .1, .1]), (1, 24, [.98, .1, .1]),
+                (0, 18, [.6, .1, .1])]
+        sites, eps = associate(rows, interior=[[1]*3, [1]*3, [0]*3])
+        self.assertEqual(len(sites), 1)
+        self.assertEqual(sites[0]['anchor_range_px'], [20, 24])
+        self.assertEqual(sites[0]['observed_anchor_range_px'], [18, 24])
+        self.assertEqual(len({oid for e in eps for oid in e['observation_ids']}), 3)
+        taps = [e for e in eps if e['kind'] == 'tap']
+        self.assertEqual(len(taps), 1)
+        self.assertEqual(taps[0]['group_count'], 2)
+        self.assertEqual(set(taps[0]['observation_ids']), {'f0:l0:y0', 'f1:l0:y1', 'f0:l0:y2'})
+        # A genuine co-observed interior peak retains a separate site.
+        self.assertEqual(len(associate(rows, config=DecodeConfig(association_similarity=.5))[0]), 2)
+
+    def test_kind_mode_does_not_depend_on_attached_censored_boundary(self):
+        for kind in range(3):
+            for shift in (-10, 0, 75):
+                with self.subTest(kind=kind, shift=shift):
+                    strengths = (.96, .99, .98, .65)
+                    rows = [(frame, q + shift, [strength if k == kind else .1 for k in range(3)])
+                            for (frame, q), strength in zip(((0, 19), (1, 20), (2, 22), (0, 17)), strengths)]
+                    sites, endpoints = associate(rows, interior=[[1]*3]*3 + [[0]*3])
+                    modes = [e for e in endpoints if e['kind'] == decode.KINDS[kind]]
+                    self.assertEqual(len(sites), 1)
+                    self.assertEqual(len(modes), 1)
+                    self.assertEqual(modes[0]['group_count'], 3)
+                    self.assertAlmostEqual(modes[0]['score'], sum(strengths[:3])/3)
+                    self.assertEqual(modes[0]['observed_q_px'], 20 + shift)
+                    self.assertEqual(len(modes[0]['observation_ids']), 4)
+
+    def test_search_boundary_support_requires_an_interior_localization_witness(self):
+        points = [(40, [.3, .05, .1])]
+        boundary = scene(points, interior=[[False]*3])
+        interior = scene(points, interior=[[True]*3])
+        # The weak interpretation remains inspectable. Its existing missing
+        # localization penalty prevents treating a censored search maximum as
+        # a localized near-cost note. A real interior peak keeps its ambiguity.
+        self.assertEqual(boundary['events'], [])
+        self.assertTrue(interior['events'])
+        self.assertEqual(len(boundary['candidates']), len(interior['candidates']))
+        for before, after in zip(interior['endpoints'], boundary['endpoints']):
+            self.assertIsNone(after['q_px'])
+            for field in ('observed_q_px', 'observed_range_px', 'observation_ids', 'score', 'utility'):
+                self.assertEqual(before[field], after[field])
+        tap = next(c for c in boundary['candidates'] if c['type'] == 'tap')
+        self.assertEqual(tap['missing_endpoints'], 1)
+        self.assertEqual(tap['cost_terms']['missing_endpoint'], DecodeConfig().missing_endpoint_cost)
+
+        # One usable witness licenses that kind's fused coordinate, without
+        # dropping the other censored raw rows or licensing other kinds.
+        rows = [(frame, 40., [.95, .1, .05]) for frame in range(3)]
+        _, endpoints = associate(rows, interior=[[0]*3, [1, 0, 0], [0]*3])
+        by_kind = {e['kind']: e for e in endpoints}
+        self.assertEqual(by_kind['tap']['q_px'], 40.)
+        self.assertEqual(len(by_kind['tap']['observation_ids']), 3)
+        self.assertIsNone(by_kind['head']['q_px'])
+        self.assertIsNone(by_kind['tail']['q_px'])
+        clipped = scene([(40, 0)], flags=[[1, 0, 0]], interior=[[1]*3])
+        self.assertTrue(all(e['q_px'] is None for e in clipped['endpoints'] if e['kind'] == 'tap'))
+
+    def test_correlation_of_dim_texture_is_not_full_foreground_support(self):
+        # A scaled copy can have unit normalized correlation, independently of
+        # whether its amplitude supplies visible foreground evidence.
+        import cv2
+        texture = np.random.default_rng(194).integers(0, 5, (9, 12), dtype=np.uint8)
+        bright, dim = texture*50, texture
+        score = float(cv2.matchTemplate(dim, bright, cv2.TM_CCOEFF_NORMED)[0, 0])
+        self.assertGreater(score, .999)
+        projection = np.zeros((1, 1, 70))
+        projection[0, 0, 10:19] = bright.mean(axis=1)
+        projection[0, 0, 40:49] = dim.mean(axis=1)
+        chunk = {'candidate_index': np.array([[7, 0, 9], [7, 0, 39]]),
+                 'frame_id': np.array([7]), 'projection': projection,
+                 'positions': np.array([[[0, 15]]*3, [[0, 45]]*3])}
+        support = decode.endpoint_foreground(chunk, 0, [9]*3, 5, 35)
+        self.assertTrue(np.all(support[0] == 1))
+        self.assertTrue(np.all(support[1] < .1))
+        data = scene([(40, [score, .1, .1])], foreground=support[1:])
+        self.assertEqual(selected(data), [])
+        self.assertTrue(data['candidates'])
+        tap = next(e for e in data['endpoints'] if e['kind'] == 'tap')
+        self.assertGreater(tap['score'], .999)
+        self.assertTrue(tap['observation_ids'])
+        self.assertEqual(selected(scene([(40, [score, .1, .1])], foreground=support[:1])),
+                         [('tap', 40., None)])
+
+    def test_patch_support_is_not_supplied_by_one_bright_scanline(self):
+        projection = np.zeros((1, 1, 40))
+        projection[0, 0, 2:14] = 60
+        projection[0, 0, 22] = 120
+        chunk = {'candidate_index': np.array([[3, 0, 2], [3, 0, 22]]),
+                 'frame_id': np.array([3]), 'projection': projection,
+                 'positions': np.array([[[0, 2]]*3, [[0, 22]]*3])}
+        support = decode.endpoint_foreground(chunk, 0, [12]*3, 0, 40)
+        np.testing.assert_allclose(support, [[1]*3, [.25]*3])
+        broad = scene([(40, [.8, .1, .1])], foreground=support[:1])
+        thin = scene([(40, [.8, .1, .1])], foreground=support[1:])
+        self.assertEqual(selected(broad), [('tap', 40., None)])
+        self.assertEqual(thin['events'], [])
+        self.assertEqual(len(thin['candidates']), len(broad['candidates']))
+        for before, after in zip(broad['endpoints'], thin['endpoints']):
+            for field in ('q_px', 'score', 'observation_ids'):
+                self.assertEqual(before[field], after[field])
+        # The original disabling convention remains available; a clipped
+        # empty patch cannot provide brightness when support is enabled.
+        np.testing.assert_allclose(decode.endpoint_foreground(chunk, 0, [12]*3, 0, 0), 1)
+        chunk['positions'][1, :, 1] = 50
+        np.testing.assert_allclose(decode.endpoint_foreground(chunk, 0, [12]*3, 0, 40)[1], 0)
+
     def test_association_does_not_chain_across_dense_observations(self):
         sites, _ = associate([(0, 20, [.99, .1, .1]), (1, 23, [.98, .1, .1]),
                               (2, 26, [.97, .1, .1]), (3, 29, [.96, .1, .1])])
