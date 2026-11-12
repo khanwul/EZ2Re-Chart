@@ -198,6 +198,15 @@ class SpatialMapTest(unittest.TestCase):
 
 class RelativePipelineTest(unittest.TestCase):
     def test_extract_reconstruct_exports_and_no_media_required(self):
+        self.roundtrip(False)
+
+    def test_motion_coordinate_dependence_reconstructs_from_observations(self):
+        self.roundtrip(True)
+
+    def test_redundant_spatial_constraints_reconstruct_from_observations(self):
+        self.roundtrip('graph')
+
+    def roundtrip(self, shared):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); song = moving_taps(root)
             text = song.read_text().replace('bpm = "191.910"', 'bpm = "120"\nmeasure_beats = [3, 1]')
@@ -219,6 +228,27 @@ class RelativePipelineTest(unittest.TestCase):
                                 'version': 'procedural', 'offset_px': [0, 0], 'position_error_px': 1})
                             seen.add(eid)
             ref['extrapolation'] = 'conditional_linear'
+            if shared:
+                from ez2rc.v2.motion import open_motion, timeline
+                from ez2rc.v2.motion_dependence import VERSION
+                clock = timeline(open_motion(first/'artifacts/motion'))
+                supports = {}
+                for anchor, index in zip(ref['anchors'], (5, 15, 25)):
+                    fid = int(clock['frame_id'][index])
+                    y = 20.
+                    q = float(clock['scroll_px'][index]) + run['input']['profile']['judge_y'] - y
+                    anchor.update(q_px=q, q_range_px=[q, q])
+                    supports[anchor['id']] = [{'frame_id': fid, 'y_px': y, 'weight': [1, 1]}]
+                ref['motion_dependence'] = {'version': VERSION, 'observation_error_px': 1.,
+                                            'anchor_observations': supports,
+                                            'endpoint_position_relation': 'same_raw_localization'}
+                if shared == 'graph':
+                    from ez2rc.v2.observed_geometry import VERSION as GEOMETRY_VERSION
+                    ref.pop('motion_dependence')
+                    ref['observed_geometry'] = {'version': GEOMETRY_VERSION, 'localization_error_px': 1.,
+                        'scale': 'constant', 'endpoint_position_relation': 'same_raw_localization',
+                        'anchor_observations': {k:[{'frame_id':p['frame_id'],'y_px':p['y_px']} for p in v]
+                                                for k,v in supports.items()}}
             p = root/'spatial.json'; p.write_text(json.dumps(ref))
             checksum = hashlib.sha256(p.read_bytes()).hexdigest()
             song.write_text(text+f'\n[timing.relative_beats]\npath = "spatial.json"\nsha256 = "{checksum}"\n')
@@ -232,7 +262,45 @@ class RelativePipelineTest(unittest.TestCase):
             a = json.loads((extracted/'artifacts/relative-beats.json').read_text())
             b = json.loads((reconstructed/'artifacts/relative-beats.json').read_text())
             self.assertEqual(a, b)
+            rhythm_a = json.loads((extracted/'artifacts/rhythm-candidates.json').read_text())
+            rhythm_b = json.loads((reconstructed/'artifacts/rhythm-candidates.json').read_text())
+            self.assertEqual(rhythm_a, rhythm_b)
+            self.assertEqual(rhythm_a['relative_beats_sha256'], hashlib.sha256((extracted/'artifacts/relative-beats.json').read_bytes()).hexdigest())
+            self.assertEqual(read_chart(reconstructed/'chart.json')['rhythm_candidates_ref'], 'artifacts/rhythm-candidates.json')
+            song.write_text(song.read_text()+'\n[timing.rhythm_grid]\nsubdivisions = [2, 3]\n')
+            code, changed = execute(song, output_root=root/'out', observation_cache=first/'artifacts/observations')
+            self.assertEqual(code, 2)
+            rhythm_changed = json.loads((changed/'artifacts/rhythm-candidates.json').read_text())
+            self.assertNotEqual(rhythm_changed['identity'], rhythm_a['identity'])
+            if shared == 'graph':
+                self.assertNotEqual(rhythm_changed['relative_beats_sha256'], rhythm_a['relative_beats_sha256'])
+                self.assertEqual(a['rhythm_refinement']['grid'], rhythm_a['grid'])
+            else:
+                self.assertEqual(rhythm_changed['relative_beats_sha256'], rhythm_a['relative_beats_sha256'])
+            changed_run = json.loads((changed/'run.json').read_text())
+            for stage in ('observation', 'motion', 'fusion', 'decode'):
+                self.assertEqual(changed_run['stages'][stage]['cache_id'], run['stages'][stage]['cache_id'])
             self.assertGreater(a['conditional_candidate_count'], 0)
+            if shared == 'graph':
+                self.assertEqual(a['observed_geometry']['status'], 'conditional')
+                self.assertFalse(a['observed_geometry']['verified'])
+                lo, hi = unpack(a['observed_geometry']['scale_px_per_beat'])
+                self.assertLessEqual(lo, 10)
+                self.assertGreaterEqual(hi, 10)
+                self.assertTrue(all(p['relative_beat']['dependency_model'] == GEOMETRY_VERSION
+                                    for r in a['candidates'] for p in r['endpoints'].values()))
+            elif shared:
+                self.assertIsNotNone(a['motion_dependence'])
+                self.assertTrue(a['coordinate_uncertainty']['sources'])
+                self.assertTrue(a['motion_dependence']['shared_endpoint_position_ids'])
+                from ez2rc.v2.observation import open_observations
+                independent = deepcopy(ref)
+                independent.pop('motion_dependence')
+                prior = project_relative_beats(open_observations(first/'artifacts/observations'),
+                    open_motion(first/'artifacts/motion'), open_decode(first/'artifacts/decode'),
+                    independent, measure_beats=F(3))
+                self.assertEqual([p['capture_time'] for r in a['candidates'] for p in r['endpoints'].values()],
+                                 [p['capture_time'] for r in prior['candidates'] for p in r['endpoints'].values()])
             self.assertEqual(read_chart(reconstructed/'chart.json')['notes'], [])
             self.assertEqual(read_events(first/'artifacts/events.json')['events'], read_events(reconstructed/'artifacts/events.json')['events'])
             self.assertIn('relative-beats.json', (reconstructed/'report.html').read_text())

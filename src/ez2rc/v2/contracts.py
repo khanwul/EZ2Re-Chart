@@ -127,6 +127,9 @@ class Event:
     selected_cost: float | None = None
     alternative_cost: float | None = None
     reason: str | None = None
+    start_beat: Fraction | None = None
+    end_beat: Fraction | None = None
+    beat_coordinate: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.id, str) or not self.id or type(self.lane) is not int or self.lane < 0:
@@ -138,11 +141,22 @@ class Event:
         for value in (self.start_ms, self.end_ms, self.selected_cost, self.alternative_cost):
             if value is not None and not finite_number(value):
                 raise ValueError("non-finite event value")
-        if self.status == "resolved" and (self.type is None or self.start_ms is None):
+        musical = self.beat_coordinate == 'first_barline_zero'
+        if self.beat_coordinate not in (None, 'first_barline_zero'):
+            raise ValueError('unknown event beat coordinate')
+        if musical:
+            if self.status != 'resolved' or self.type is None:
+                raise ValueError('exact musical event requires a resolved physical type')
+            Note(self.id,self.lane,self.type,self.start_beat,self.end_beat)
+            if any(v is not None for v in (self.start_ms,self.end_ms,self.start_interval,self.end_interval)):
+                raise ValueError('relative musical event must keep capture time separate')
+        elif self.start_beat is not None or self.end_beat is not None:
+            raise ValueError('event beats require a coordinate convention')
+        if self.status == "resolved" and (self.type is None or self.start_ms is None and not musical):
             raise ValueError("resolved event requires type and start time")
         if self.type == "tap" and (self.end_ms is not None or self.end_interval is not None):
             raise ValueError("tap cannot have an end")
-        if self.status == "resolved" and self.type == "longnote" and self.end_ms is None:
+        if self.status == "resolved" and self.type == "longnote" and self.end_ms is None and not musical:
             raise ValueError("resolved longnote requires an end")
         if self.start_ms is not None and self.end_ms is not None and self.end_ms <= self.start_ms:
             raise ValueError("event end must follow its start")
@@ -177,16 +191,22 @@ class Timing:
     measure_beats: Fraction | None = None
     status: Literal["resolved", "unresolved"] = "unresolved"
     reason: str | None = "beat origin and meter have not been determined"
+    coordinate: str = 'recording_timestamp_ms'
 
     def __post_init__(self):
         decimal_bpm(self.bpm)
+        if self.coordinate not in ('recording_timestamp_ms','first_barline_zero'):
+            raise ValueError('unknown musical timing coordinate')
+        if self.coordinate == 'first_barline_zero' and self.beat_zero_ms is not None:
+            raise ValueError('relative musical origin cannot supply an absolute recording timestamp')
         if self.beat_zero_ms is not None:
             exact_ms(self.beat_zero_ms)
         if self.measure_beats is not None and (
                 not isinstance(self.measure_beats, Fraction) or self.measure_beats <= 0):
             raise ValueError("invalid measure length")
         if self.status == "resolved":
-            if self.beat_zero_ms is None or self.measure_beats is None or self.reason is not None:
+            if (self.beat_zero_ms is None and self.coordinate == 'recording_timestamp_ms'
+                    or self.measure_beats is None or self.reason is not None):
                 raise ValueError("resolved timing requires origin, meter and no unresolved reason")
         elif self.status != "unresolved" or not self.reason:
             raise ValueError("unresolved timing requires a reason")

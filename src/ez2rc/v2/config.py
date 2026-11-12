@@ -13,6 +13,7 @@ import numpy as np
 
 from .contracts import decimal_bpm, origin_payload, ratio, read_ratio
 from .storage import file_hash
+from .rhythm import RhythmGrid
 
 
 class ConfigError(ValueError):
@@ -198,10 +199,16 @@ class SongConfig:
     relative_beats: dict | None = None
     context_before_ms: float = 0.0
     context_after_ms: float = 0.0
+    rhythm_grid: RhythmGrid = field(default_factory=RhythmGrid)
+    spatial_calibration: dict | None = None
+    physical_review: dict | None = None
+    calibration_verification: dict | None = None
 
     def __post_init__(self):
         number(self.context_before_ms, 'context_before_ms', 0)
         number(self.context_after_ms, 'context_after_ms', 0)
+        if not isinstance(self.rhythm_grid, RhythmGrid):
+            raise ConfigError('rhythm_grid must be a RhythmGrid')
 
     def snapshot(self):
         values = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
@@ -209,6 +216,7 @@ class SongConfig:
         values['measure_beats'] = ratio(self.measure_beats) if self.measure_beats is not None else None
         values['beat_anchors'] = [a.snapshot() for a in self.beat_anchors]
         values['range_uncertainty'] = self.range_uncertainty.snapshot() if self.range_uncertainty is not None else None
+        values['rhythm_grid'] = self.rhythm_grid.snapshot()
         return values
 
 
@@ -396,7 +404,7 @@ def load_song(path: str | Path) -> SongConfig:
                                 "context_before_ms", "context_after_ms"}, {"video", "profile"})
     meta = table(data["metadata"], {"title", "difficulty"}, {"title", "difficulty"})
     timing = table(data["timing"], {"mode", "bpm", "beat_zero_ms", "beat_zero_ms_exact", "measure_beats", "judgment_calibration",
-                                     "marker_calibrations", "beat_anchors", "origin_adoption", "range_uncertainty", "relative_beats"}, {"mode", "bpm"})
+                                     "marker_calibrations", "beat_anchors", "origin_adoption", "range_uncertainty", "relative_beats", "rhythm_grid", "spatial_calibration", "physical_review", "calibration_verification"}, {"mode", "bpm"})
     if timing["mode"] != "fixed":
         raise ConfigError("only explicitly supplied fixed BPM is implemented")
     decimal_bpm(timing["bpm"])
@@ -467,7 +475,11 @@ def load_song(path: str | Path) -> SongConfig:
     if "algorithm" in data:
         settings = table(data["algorithm"], {"config"}, {"config"})
         algorithm = (source.parent / string(settings["config"], "algorithm.config")).resolve()
-    relative = None
+    relative, spatial_calibration, physical_review, calibration_verification = None, None, None, None
+    try:
+        grid = RhythmGrid(**table(timing.get('rhythm_grid', {}), {'subdivisions'}))
+    except ValueError as exc:
+        raise ConfigError(f'invalid rhythm_grid: {exc}') from exc
     if 'relative_beats' in timing:
         value = table(timing['relative_beats'], {'path', 'sha256'}, {'path', 'sha256'})
         checksum = string(value['sha256'], 'relative_beats.sha256')
@@ -475,10 +487,35 @@ def load_song(path: str | Path) -> SongConfig:
             raise ConfigError('relative_beats.sha256 must be a lowercase SHA-256')
         relative = {'path': str((source.parent / string(value['path'], 'relative_beats.path')).resolve()),
                     'sha256': checksum}
+    if 'spatial_calibration' in timing:
+        if relative is not None:
+            raise ConfigError('supply manual relative_beats or automatic spatial_calibration')
+        value = table(timing['spatial_calibration'], {'path', 'sha256'}, {'path', 'sha256'})
+        checksum = string(value['sha256'], 'spatial_calibration.sha256')
+        if len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum):
+            raise ConfigError('spatial_calibration.sha256 must be a lowercase SHA-256')
+        spatial_calibration = {'path': str((source.parent / string(value['path'], 'spatial_calibration.path')).resolve()),
+                               'sha256': checksum}
+    if 'physical_review' in timing:
+        value = table(timing['physical_review'], {'path', 'sha256'}, {'path', 'sha256'})
+        checksum = string(value['sha256'], 'physical_review.sha256')
+        if len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum):
+            raise ConfigError('physical_review.sha256 must be a lowercase SHA-256')
+        physical_review = {'path': str((source.parent / string(value['path'], 'physical_review.path')).resolve()),
+                           'sha256': checksum}
+    if 'calibration_verification' in timing:
+        value = table(timing['calibration_verification'], {'path', 'sha256'}, {'path', 'sha256'})
+        checksum = string(value['sha256'], 'calibration_verification.sha256')
+        if len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum):
+            raise ConfigError('calibration_verification.sha256 must be a lowercase SHA-256')
+        calibration_verification = {
+            'path': str((source.parent / string(value['path'], 'calibration_verification.path')).resolve()),
+            'sha256': checksum}
     return SongConfig(source, video, profile, title, difficulty, timing["bpm"], start, end, algorithm,
                       origin, measure, judgment, calibrations, tuple(anchors), adoption, uncertainty, relative,
                       number(inp.get('context_before_ms', 0), 'context_before_ms', 0),
-                      number(inp.get('context_after_ms', 0), 'context_after_ms', 0))
+                      number(inp.get('context_after_ms', 0), 'context_after_ms', 0), grid, spatial_calibration, physical_review,
+                      calibration_verification)
 
 
 def load_algorithm(path: Path | None) -> AlgorithmConfig:

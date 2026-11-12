@@ -15,7 +15,7 @@ from . import __version__
 from .capture import CaptureError, VERSION as CAPTURE_VERSION, validate_timeline
 from .config import load_algorithm, load_profile, load_song
 from .contracts import Metadata, STAGES, origin_schema, read_origin
-from .export import write_outputs
+from .export import write_outputs, chart_schema
 from .observation import collect, open_observations
 from .motion import estimate
 from .fusion import accumulate
@@ -27,7 +27,12 @@ from .reference_link import VERSION as REFERENCE_LINK_VERSION, link_reference_or
 from .origin import VERSION as ORIGIN_VERSION, adopt_reference_origin
 from .beat_ranges import project_beat_ranges
 from .endpoint_ranges import VERSION as ENDPOINT_RANGES_VERSION, project_endpoint_time_ranges
-from .relative_beats import load_reference, project_relative_beats
+from .relative_beats import load_reference, load_spatial_calibration, project_relative_beats
+from .rhythm import rhythm_candidates
+from .barline_grid import infer_barline_grid, spatial_reference
+from .spatial_resolution import resolve_spatial_chart
+from .physical_review import load_physical_review
+from .calibration_verification import load_calibration_verification
 from .window import song_window, has_context, analysis_scope, scope_events
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
@@ -174,6 +179,9 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         references = reference_candidates(
             observations, motion, song.bpm, beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats)
         write_json(root / reference_ref, references)
+        barline_ref = 'artifacts/barline-grid.json'
+        barlines = infer_barline_grid(observations, motion, song.bpm, song.measure_beats)
+        write_json(root / barline_ref, barlines)
         reference_link_ref = 'artifacts/reference-origin-link.json'
         linked = link_reference_origin(references, marker_calibrations=song.marker_calibrations,
                                        beat_anchors=song.beat_anchors)
@@ -186,22 +194,51 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         adoption['reference_origin_link_sha256'] = file_hash(root / reference_link_ref)
         write_json(root / adoption_ref, adoption)
         profile_data = meta["profile"]
+        calibration_verification, calibration_verification_ref = None, None
+        if song.calibration_verification is not None:
+            calibration_verification = load_calibration_verification(song.calibration_verification, observations)
+            calibration_verification_ref = 'artifacts/calibration-verification.json'
+            write_json(root / calibration_verification_ref, calibration_verification.snapshot())
+        physical_review, physical_review_ref = None, None
+        if song.physical_review is not None:
+            physical_review = load_physical_review(song.physical_review, observations, motion, decoded)
+            physical_review_ref = 'artifacts/physical-review.json'
+            write_json(root / physical_review_ref, physical_review.snapshot())
         events, pixel_intervals = output_events(decoded)
         if scope is not None:
             events, pixel_intervals = scope_events(events, pixel_intervals, scope)
         relative_ref, relative = None, None
+        relative_input, spatial_input_sha = None, None
         if song.relative_beats is not None:
             relative_input = load_reference(song.relative_beats)
+            spatial_input_sha = song.relative_beats['sha256']
+        elif song.spatial_calibration is not None:
+            spatial_calibration = load_spatial_calibration(song.spatial_calibration)
+            write_json(root/'artifacts/spatial-calibration.json',spatial_calibration)
+            relative_input = spatial_reference(barlines,spatial_calibration)
+            spatial_input_sha = song.spatial_calibration['sha256']
+        if relative_input is not None:
             relative = project_relative_beats(observations, motion, decoded, relative_input,
-                                              measure_beats=song.measure_beats)
+                                              measure_beats=song.measure_beats, rhythm_grid=song.rhythm_grid,
+                                              physical_review=physical_review)
             if scope_ref is not None:
                 relative.update(analysis_scope_ref=scope_ref, observation_scope='includes_auxiliary')
             relative_input_ref = 'artifacts/spatial-beat-reference.json'
             write_json(root / relative_input_ref, relative_input)
-            relative.update(input_sha256=song.relative_beats['sha256'],
+            relative.update(input_sha256=spatial_input_sha,
                             reference_ref=relative_input_ref, reference_sha256=file_hash(root / relative_input_ref))
+            if song.spatial_calibration is not None:
+                relative.update(barline_grid_ref=barline_ref,barline_grid_sha256=file_hash(root/barline_ref),
+                                calibration_ref='artifacts/spatial-calibration.json')
             relative_ref = 'artifacts/relative-beats.json'
             write_json(root / relative_ref, relative)
+        rhythm_ref = 'artifacts/rhythm-candidates.json'
+        rhythm = rhythm_candidates(relative, song.rhythm_grid)
+        rhythm.update(relative_beats_ref=relative_ref,
+                      relative_beats_sha256=file_hash(root / relative_ref) if relative_ref else None)
+        rhythm['identity'] = digest({'version': rhythm['algorithm_version'], 'grid': rhythm['grid'],
+                                     'relative_sha256': rhythm['relative_beats_sha256']})
+        write_json(root / rhythm_ref, rhythm)
         chart, events, resolution = resolve_pixel_timing(
             events, pixel_intervals, projection,
             Metadata(profile_data["game"], profile_data["mode"], len(profile_data["lanes"]),
@@ -228,6 +265,20 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                           endpoint_time_ranges_sha256=file_hash(root / endpoint_ranges_ref),
                           time_projection_ref=projection_ref, time_projection_sha256=file_hash(root / projection_ref))
         write_json(root / ranges_ref, ranges)
+        chart,events,spatial_resolution=resolve_spatial_chart(chart,events,relative,rhythm,barlines,profile_data,
+            physical_review=physical_review, calibration_verification=calibration_verification)
+        spatial_resolution_ref='artifacts/spatial-resolution.json'
+        spatial_resolution.update(relative_beats_ref=relative_ref,
+            relative_beats_sha256=file_hash(root/relative_ref) if relative_ref else None,
+            rhythm_candidates_ref=rhythm_ref,rhythm_candidates_sha256=file_hash(root/rhythm_ref),
+            barline_grid_ref=barline_ref,barline_grid_sha256=file_hash(root/barline_ref))
+        if physical_review_ref is not None:
+            spatial_resolution.update(physical_review_ref=physical_review_ref,
+                                      physical_review_sha256=file_hash(root / physical_review_ref))
+        if calibration_verification_ref is not None:
+            spatial_resolution.update(calibration_verification_ref=calibration_verification_ref,
+                calibration_verification_sha256=file_hash(root / calibration_verification_ref))
+        write_json(root/spatial_resolution_ref,spatial_resolution)
         run["stages"]["timing"] = {"status": "pending" if "timing" in chart.pending_stages else "complete",
                                     "algorithm_version": RESOLUTION_VERSION, "projection_ref": projection_ref,
                                     "projection_version": PROJECTION_VERSION,
@@ -247,6 +298,19 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             run['stages']['timing'].update(relative_beats_ref=relative_ref,
                 relative_beats_version=relative['algorithm_version'],
                 relative_beat_candidates=relative['conditional_candidate_count'])
+        run['stages']['timing'].update(rhythm_candidates_ref=rhythm_ref,
+                                      rhythm_candidates_version=rhythm['algorithm_version'],
+                                      rhythm_candidates_identity=rhythm['identity'])
+        run['stages']['timing'].update(barline_grid_ref=barline_ref,barline_grid_status=barlines['status'],
+                                      barline_grid_version=barlines['algorithm_version'])
+        run['stages']['timing'].update(spatial_resolution_ref=spatial_resolution_ref,
+                                      spatial_resolution_version=spatial_resolution['algorithm_version'])
+        if physical_review_ref is not None:
+            run['stages']['timing'].update(physical_review_ref=physical_review_ref,
+                                           physical_review=physical_review.receipt())
+        if calibration_verification_ref is not None:
+            run['stages']['timing'].update(calibration_verification_ref=calibration_verification_ref,
+                                          calibration_verification=calibration_verification.receipt())
         active = "export"
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
@@ -260,6 +324,11 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                       origin_adoption_ref=adoption_ref,
                       beat_ranges_ref=ranges_ref,
                       relative_beats_ref=relative_ref, relative_beats=relative,
+                      rhythm_candidates_ref=rhythm_ref,
+                      barline_grid_ref=barline_ref,
+                      spatial_resolution_ref=spatial_resolution_ref,
+                      physical_review_ref=physical_review_ref,
+                      calibration_verification_ref=calibration_verification_ref,
                       analysis_scope_ref=scope_ref, analysis_scope=scope,
                       candidates=[c for p in pixel_intervals for c in (*p['selected_intervals'], *p['alternatives'])],
                       diagnostics={"motion": motion.manifest["metadata"]["status_counts"],
@@ -267,13 +336,20 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                    "position_calibration": meta.get('position_calibration'),
                                    "endpoint_calibration": "unverified" if any(c["status"] != "verified" for c in profile_data["calibration"].values()) else "verified"})
         run["status"] = chart.status
-        run["stages"]["export"] = {"status": "complete", "schema_version": origin_schema(chart.timing.beat_zero_ms)}
+        run["stages"]["export"] = {"status": "complete", "schema_version": chart_schema(chart)}
         result = EXIT_COMPLETE if chart.status == "complete" else EXIT_PARTIAL
     except (OSError, ValueError, RuntimeError) as exc:
         if isinstance(exc, CaptureError):
             active = "capture"
         run["status"] = "failed"
         run["failure"] = {"stage": active, "type": type(exc).__name__, "message": str(exc)}
+        from .difference_constraints import ConstraintConflict
+        if isinstance(exc,ConstraintConflict):
+            from .contracts import ratio
+            conflict_ref='artifacts/coordinate-conflict.json'
+            write_json(root/conflict_ref,{'format':'ez2rc.coordinate-conflict','schema_version':1,
+                'edges':[{**edge,'upper':ratio(edge['upper'])} for edge in exc.edges]})
+            run['failure']['evidence_ref']=conflict_ref
         if active in run["stages"]:
             run["stages"][active] = {"status": "failed"}
         for stage in run["stages"].values():

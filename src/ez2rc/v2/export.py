@@ -9,13 +9,18 @@ from .contracts import (Chart, Event, Metadata, Note, TimeInterval, Timing,
 from .storage import read_json, write_json
 
 
+def chart_schema(chart):
+    return 3 if chart.timing.coordinate=='first_barline_zero' else origin_schema(chart.timing.beat_zero_ms)
+
+
 def chart_payload(chart: Chart) -> dict:
     return {
-        "format": "ez2rc.chart", "schema_version": origin_schema(chart.timing.beat_zero_ms), "status": chart.status,
+        "format": "ez2rc.chart", "schema_version": chart_schema(chart), "status": chart.status,
         "metadata": asdict(chart.metadata),
         "timing": {
             **origin_payload(chart.timing.beat_zero_ms), "status": chart.timing.status,
             "reason": chart.timing.reason,
+            **({'coordinate':chart.timing.coordinate} if chart_schema(chart)==3 else {}),
             "bpm_timeline": [{"start_beat": [0, 1], "bpm": chart.timing.bpm}],
             "measure_lengths": ([{"start_beat": [0, 1], "length_beats": ratio(chart.timing.measure_beats)}]
                                 if chart.timing.measure_beats is not None else None),
@@ -34,11 +39,21 @@ def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_re
                    decode_ref=None, time_projection_ref=None, timing_resolution_ref=None,
                    reference_candidates_ref=None, reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
                    endpoint_time_ranges_ref=None, relative_beats_ref=None, analysis_scope_ref=None,
+                   rhythm_candidates_ref=None, barline_grid_ref=None, spatial_resolution_ref=None, physical_review_ref=None,
+                   calibration_verification_ref=None,
                    pixel_intervals=(), pending_stages=(), candidates=()) -> dict:
     ids = [event.id for event in events]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate event ID")
-    return {"format": "ez2rc.events", "schema_version": 1,
+    musical = any(e.beat_coordinate is not None for e in events)
+    rows=[]
+    for event in sorted(events,key=lambda e:e.id):
+        row=asdict(event)
+        for key in ('start_beat','end_beat','beat_coordinate'):
+            if not musical:row.pop(key)
+            elif key!='beat_coordinate':row[key]=ratio(row[key]) if row[key] is not None else None
+        rows.append(row)
+    return {"format": "ez2rc.events", "schema_version": 2 if musical else 1,
             "motion_ref": motion_ref, "observation_ref": observation_ref,
             "fusion_ref": fusion_ref,
             "decode_ref": decode_ref, "time_projection_ref": time_projection_ref,
@@ -49,17 +64,26 @@ def events_payload(events: tuple[Event, ...], *, motion_ref=None, observation_re
             "origin_adoption_ref": origin_adoption_ref,
             "beat_ranges_ref": beat_ranges_ref,
             **({'relative_beats_ref': relative_beats_ref} if relative_beats_ref is not None else {}),
+            **({'rhythm_candidates_ref': rhythm_candidates_ref} if rhythm_candidates_ref is not None else {}),
+            **({'barline_grid_ref': barline_grid_ref} if barline_grid_ref is not None else {}),
+            **({'spatial_resolution_ref': spatial_resolution_ref} if spatial_resolution_ref is not None else {}),
+            **({'physical_review_ref': physical_review_ref} if physical_review_ref is not None else {}),
+            **({'calibration_verification_ref': calibration_verification_ref} if calibration_verification_ref is not None else {}),
             **({'analysis_scope_ref': analysis_scope_ref} if analysis_scope_ref is not None else {}),
             "pending_stages": list(pending_stages), "candidates": list(candidates),
-            "events": [asdict(e) for e in sorted(events, key=lambda e: e.id)]}
+            "events": rows}
 
 
 def read_events(path: Path) -> dict:
-    value = read_json(path, "ez2rc.events")
+    value = read_json(path, "ez2rc.events",schema_versions=(1,2))
     try:
         events = []
         for data in value["events"]:
             data = dict(data)
+            if value['schema_version']==1 and any(k in data for k in ('start_beat','end_beat','beat_coordinate')):
+                raise ValueError('relative musical events require schema 2')
+            for key in ('start_beat','end_beat'):
+                if data.get(key) is not None:data[key]=read_ratio(data[key])
             for key in ("start_interval", "end_interval"):
                 if data[key] is not None:
                     data[key] = TimeInterval(**data[key])
@@ -74,7 +98,7 @@ def read_events(path: Path) -> dict:
 
 
 def read_chart(path: Path) -> dict:
-    value = read_json(path, "ez2rc.chart", schema_versions=(1, 2))
+    value = read_json(path, "ez2rc.chart", schema_versions=(1, 2, 3))
     try:
         metadata = Metadata(**value["metadata"])
         notes = tuple(Note(n["id"], n["lane"], n["type"], read_ratio(n["start_beat"]),
@@ -87,9 +111,17 @@ def read_chart(path: Path) -> dict:
         measures = timing["measure_lengths"]
         if measures is not None and (len(measures) != 1 or read_ratio(measures[0]["start_beat"]) != 0):
             raise ValueError("only constant measure length is implemented")
-        clock = Timing(tempo[0]["bpm"], read_origin(timing, value['schema_version']),
+        if value['schema_version']==3:
+            if (timing.get('coordinate')!='first_barline_zero' or timing['beat_zero_ms'] is not None
+                    or 'beat_zero_ms_exact' in timing):
+                raise ValueError('relative musical chart requires a separate capture clock')
+            origin=None
+        else:
+            if 'coordinate' in timing:raise ValueError('coordinate declaration requires chart schema 3')
+            origin=read_origin(timing,value['schema_version'])
+        clock = Timing(tempo[0]["bpm"], origin,
                        read_ratio(measures[0]["length_beats"]) if measures is not None else None,
-                       timing["status"], timing["reason"])
+                       timing["status"], timing["reason"],timing.get('coordinate','recording_timestamp_ms'))
         unresolved = value["unresolved"]
         ids = [n.id for n in notes] + [e["id"] for e in unresolved]
         if len(ids) != len(set(ids)) or any(n.lane >= metadata.lane_count for n in notes):
@@ -114,6 +146,8 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
                   time_projection_ref=None, timing_resolution_ref=None, reference_candidates_ref=None,
                   reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
                   endpoint_time_ranges_ref=None, relative_beats_ref=None, relative_beats=None,
+                  rhythm_candidates_ref=None, barline_grid_ref=None, spatial_resolution_ref=None, physical_review_ref=None,
+                  calibration_verification_ref=None,
                   analysis_scope_ref=None, analysis_scope=None,
                   pixel_intervals=(), diagnostics=None):
     event_ids = {e.id for e in events}
@@ -124,6 +158,10 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         event = by_id[note.id]
         if event.status != "resolved" or event.lane != note.lane or event.type != note.type:
             raise ValueError("chart note disagrees with its observed event")
+        if event.beat_coordinate is not None and (
+                event.beat_coordinate!=chart.timing.coordinate
+                or event.start_beat!=note.start_beat or event.end_beat!=note.end_beat):
+            raise ValueError('chart musical note disagrees with its resolved event')
     for event in chart.unresolved:
         if by_id[event.id] != event:
             raise ValueError("unresolved chart event disagrees with evidence")
@@ -132,6 +170,16 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         payload['beat_ranges_ref'] = beat_ranges_ref
     if relative_beats_ref is not None:
         payload['relative_beats_ref'] = relative_beats_ref
+    if rhythm_candidates_ref is not None:
+        payload['rhythm_candidates_ref'] = rhythm_candidates_ref
+    if barline_grid_ref is not None:
+        payload['barline_grid_ref'] = barline_grid_ref
+    if spatial_resolution_ref is not None:
+        payload['spatial_resolution_ref'] = spatial_resolution_ref
+    if physical_review_ref is not None:
+        payload['physical_review_ref'] = physical_review_ref
+    if calibration_verification_ref is not None:
+        payload['calibration_verification_ref'] = calibration_verification_ref
     if analysis_scope_ref is not None:
         payload['analysis_scope_ref'] = analysis_scope_ref
     write_json(root / "chart.json", payload)
@@ -144,6 +192,11 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         origin_adoption_ref=origin_adoption_ref,
         beat_ranges_ref=beat_ranges_ref,
         relative_beats_ref=relative_beats_ref,
+        rhythm_candidates_ref=rhythm_candidates_ref,
+        barline_grid_ref=barline_grid_ref,
+        spatial_resolution_ref=spatial_resolution_ref,
+        physical_review_ref=physical_review_ref,
+        calibration_verification_ref=calibration_verification_ref,
         analysis_scope_ref=analysis_scope_ref,
         pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
@@ -211,6 +264,18 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
     if beat_ranges_ref:
         visual += (f"<p><a href='{escape(beat_ranges_ref, quote=True)}'>Conditional beat ranges</a>. "
                    "Ranges share one origin shift across all endpoints and remain separate from resolved notes.</p>")
+    if rhythm_candidates_ref:
+        visual += (f"<p><a href='{escape(rhythm_candidates_ref, quote=True)}'>Rhythm grid candidates</a>. "
+                   "The configured subdivisions bound the candidate search. A unique grid label still requires "
+                   "calibration and physical evidence before acceptance.</p>")
+    if barline_grid_ref:
+        visual += (f"<p><a href='{escape(barline_grid_ref, quote=True)}'>First barline and measure hypotheses</a>. "
+                   "Moving-line observations, leading coverage, missing lines and conflicting cycles remain inspectable.</p>")
+    if calibration_verification_ref:
+        visual += (f"<p><a href='{escape(calibration_verification_ref, quote=True)}'>Spatial measurement assessment and scope</a>. "
+                   "This evidence applies to relative musical coordinates. Recording-clock calibration is reported separately.</p>")
+    if spatial_resolution_ref:
+        visual += f"<p><a href='{escape(spatial_resolution_ref, quote=True)}'>Musical acceptance decisions</a>.</p>"
     if relative_beats_ref:
         visual += (f"<p><a href='{escape(relative_beats_ref, quote=True)}'>First-barline relative beats and capture times</a>. "
                    "Beat zero is the first barline. Relative beats use spatial anchors; recording timestamps use observed scroll. "
