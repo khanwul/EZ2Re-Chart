@@ -198,15 +198,17 @@ def cache_keys(song, profile, algo, video_hash):
         "profile_sha256": profile.source_sha256,
         "template_shapes": [{kind: list(lane.templates[kind].shape[:2]) for kind in KINDS}
                             for lane in profile.lanes],
+        "cadence_policy": "preserve-pts-report-irregular-1",
         "algorithm": algo.observation_parameters(), "opencv_version": cv2.__version__,
         "numpy_version": np.__version__, **scope,
     }, (digest(capture),))
     return capture, observation
 
 
-def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Path):
+def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Path, *, progress=None):
     from .window import song_window, has_context, in_interval
     from .setup import check_video
+    report = progress or (lambda message: None)
     check_video(song.video, profile.resolution, profile.snapshot.get('expected_fps'))
     window = song_window(song)
     video_hash = file_hash(song.video)
@@ -227,6 +229,8 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
     buffer = []
     previous_signature, repeat_group, previous_ms = None, None, None
     count = candidate_count = repeated = requested_count = 0
+    cadence = {"irregular_interval_count": 0, "max_interval_ms": 0.0,
+               "first_irregular_frame": None, "expected_fps": profile.snapshot.get("expected_fps")}
     with CacheWriter(root, capture_key) as capture_writer, CacheWriter(root, observation_key) as writer:
         def flush():
             stamps = [f.stamp for f, _, _ in buffer]
@@ -253,8 +257,17 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
             if (frame.bgr.shape[1], frame.bgr.shape[0]) != profile.resolution:
                 raise ValueError("video resolution changed during decode")
             fps = profile.snapshot.get('expected_fps')
-            if fps is not None and previous_ms is not None and abs(frame.stamp.timestamp_ms-previous_ms-1000/fps) > 1:
-                raise ValueError('video timestamps do not match the fixed recording FPS; check dropped frames or variable frame rate')
+            if fps is not None and previous_ms is not None:
+                interval = frame.stamp.timestamp_ms - previous_ms
+                if interval <= 0:
+                    raise ValueError(f'video timestamps must increase at frame {frame.stamp.frame_id}')
+                cadence['max_interval_ms'] = max(cadence['max_interval_ms'], interval)
+                if abs(interval - 1000 / fps) > 1:
+                    cadence['irregular_interval_count'] += 1
+                    if cadence['first_irregular_frame'] is None:
+                        cadence['first_irregular_frame'] = frame.stamp.frame_id
+                        report('Warning: irregular video frame interval; preserving original timestamps. '
+                               'Missing visual evidence may require review.')
             previous_ms = frame.stamp.timestamp_ms
             observation = observe_frame(frame, profile, algo, offset)
             if observation["signature"] != previous_signature:
@@ -286,6 +299,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
             "profile": profile.snapshot, "profile_path": str(song.profile),
             "profile_sha256": profile.source_sha256, "asset_sha256": profile.asset_hashes,
             "frame_count": count, "candidate_count": candidate_count,
+            "frame_cadence": cadence,
             "exact_repeated_images": repeated,
             "repeat_policy": "provisional exact lane-image equality; motion confirmation pending",
             "score_columns": ["tap_similarity", "head_similarity", "tail_similarity", "body_brightness_fraction"],

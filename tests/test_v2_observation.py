@@ -145,6 +145,26 @@ class TopContinuationTest(unittest.TestCase):
         touching = scene([(20, 1), (80, 2), (80, 0)], [(20, 80)], flags=[usable] * 3)
         self.assertEqual(set(selected(touching)), {('longnote', 20., 80.), ('tap', 80., None)})
 
+    def test_fixed_rate_profile_preserves_irregular_pts_and_reports_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, pts = fixture(root)
+            profile_path = root / 'profile.toml'
+            profile_path.write_text(profile_path.read_text().replace(
+                'schema_version = 1', 'schema_version = 1\nexpected_fps = 60', 1))
+            song = load_song(path)
+            messages = []
+            _, observations, reused = collect(song, load_profile(song.profile),
+                load_algorithm(song.algorithm), root / 'cache', progress=messages.append)
+            self.assertFalse(reused)
+            times = np.concatenate([c['timestamp_ms'] for c in observations.chunks()])
+            np.testing.assert_allclose(times, np.array(pts) - pts[0])
+            cadence = observations.manifest['metadata']['frame_cadence']
+            self.assertEqual(cadence['irregular_interval_count'], 2)
+            self.assertEqual(cadence['first_irregular_frame'], 3)
+            self.assertAlmostEqual(cadence['max_interval_ms'], 50)
+            self.assertTrue(any(m.startswith('Warning:') for m in messages))
+
     def test_observation_version_invalidates_old_flags_without_changing_capture(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

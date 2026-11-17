@@ -131,6 +131,9 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                 raise ValueError("capture lineage or analysis interval differs from the configuration")
             reused = True
         meta = observations.manifest["metadata"]
+        if meta.get("frame_cadence", {}).get("irregular_interval_count", 0):
+            run["warnings"] = [{"code": "irregular_frame_intervals", **meta["frame_cadence"],
+                                "message": "Original timestamps preserved; review missing visual evidence."}]
         run["input"] = {"video_sha256": meta["video_sha256"], "asset_sha256": meta["asset_sha256"],
                         "capture": meta["capture"], "profile": meta["profile"],
                         "profile_sha256": meta["profile_sha256"]}

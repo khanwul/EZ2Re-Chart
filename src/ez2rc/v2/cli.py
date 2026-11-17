@@ -110,6 +110,9 @@ def main(argv=None):
         print(f"{run['status']}: {root}")
         if 'draft' in run:
             print(f"Editable draft saved: {root / 'draft.json'} ({run['draft']['notes']} notes; video review required).")
+        for warning in run.get("warnings", []):
+            print(f"warning: {warning['irregular_interval_count']} irregular frame interval(s). "
+                  f"{warning['message']}", file=sys.stderr)
         if run["failure"]:
             print(f"error [{run['failure']['stage']}]: {run['failure']['message']}", file=sys.stderr)
         elif run["status"] == "partial":
