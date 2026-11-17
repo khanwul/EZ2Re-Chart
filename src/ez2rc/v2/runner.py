@@ -132,7 +132,8 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             reused = True
         meta = observations.manifest["metadata"]
         run["input"] = {"video_sha256": meta["video_sha256"], "asset_sha256": meta["asset_sha256"],
-                        "capture": meta["capture"], "profile": meta["profile"]}
+                        "capture": meta["capture"], "profile": meta["profile"],
+                        "profile_sha256": meta["profile_sha256"]}
         if has_context(song_window(song)):
             run['input']['analysis_window'] = song_window(song)
         run["cost"]["capture_observation_seconds"] = time.monotonic() - started
@@ -271,7 +272,8 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                           time_projection_ref=projection_ref, time_projection_sha256=file_hash(root / projection_ref))
         write_json(root / ranges_ref, ranges)
         chart,events,spatial_resolution=resolve_spatial_chart(chart,events,relative,rhythm,barlines,profile_data,
-            physical_review=physical_review, calibration_verification=calibration_verification)
+            physical_review=physical_review, calibration_verification=calibration_verification,
+            analysis_scope=scope)
         spatial_resolution_ref='artifacts/spatial-resolution.json'
         spatial_resolution.update(relative_beats_ref=relative_ref,
             relative_beats_sha256=file_hash(root/relative_ref) if relative_ref else None,
@@ -321,9 +323,11 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         write_json(root / "run.json", run)
         draft_projection = project_draft(observations, motion, decoded, barlines,
             allowed_candidates={c['id'] for p in pixel_intervals
-                                for c in (*p['selected_intervals'], *p['alternatives'])})
+                                for c in (*p['selected_intervals'], *p['alternatives'])},
+            analysis_scope=scope)
         draft = create_draft(draft_projection, asdict(chart.metadata), song.bpm,
                             {'video': str(song.video), 'video_sha256': meta['video_sha256'],
+                             'alignment_offset_px': meta.get('alignment_offset_px'),
                              'run_id': run_id, 'code': run['code'],
                              'observation_cache_id': observations.id, 'motion_cache_id': motion.id,
                              'decode_cache_id': decoded.id,

@@ -9,17 +9,23 @@ from .barline_grid import spatial_reference
 from .contracts import exact_ms, ratio, read_ratio
 from .decode import KINDS, lanes
 from .motion import STATUS, timeline
+from .observation import template_shapes
 from .relative_beats import project_relative_beats
+from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-2'
+VERSION = 'screen-coordinate-draft-3'
 
 
-def project_draft(observations, movement, decoded, barlines, *, allowed_candidates=None):
+def project_draft(observations, movement, decoded, barlines, *, allowed_candidates=None, analysis_scope=None):
     if (movement.manifest['key']['parents'] != [observations.id]
             or decoded.manifest['key']['parents'][:2] != [observations.id, movement.id]
             or barlines['observation_cache_id'] != observations.id
             or barlines['motion_cache_id'] != movement.id):
         raise ValueError('draft projection parent mismatch')
+    scoped = {r['event_id']: r for r in analysis_scope['events']} if analysis_scope is not None else {}
+    if analysis_scope is not None and any(analysis_scope[k] != cache.id for k, cache in (
+            ('observation_cache_id', observations), ('motion_cache_id', movement), ('decode_cache_id', decoded))):
+        raise ValueError('draft analysis scope parent mismatch')
     profile = observations.manifest['metadata']['profile']
     clock = timeline(movement)
     times = dict(zip(map(int, clock['frame_id']), map(float, clock['timestamp_ms'])))
@@ -57,13 +63,15 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                         frame, lane_id, seed = [int(v[1:]) for v in oid.split(':')]
                         requests[(frame, lane_id, seed, KINDS.index(kind))].append(eid)
     reference = spatial_reference(barlines, calibration)
+    shapes = template_shapes(observations.manifest['key']['parameters'])
     relative = (project_relative_beats(observations, movement, decoded, reference,
                                       measure_beats=read_ratio(reference['measure_beats']))
-                if reference is not None else None)
+                if reference is not None and shapes is not None else None)
     relative_rows = {r['candidate_id']: r for r in relative['candidates']} if relative else {}
     origin_issues = list(barlines['reasons'])
     if reference is None:
         origin_issues.append('barline_origin_unavailable_or_ambiguous')
+    geometry_issues = ['template_geometry_unavailable'] if shapes is None else []
     for chunk in observations.chunks():
         for i, (frame, lane, seed) in enumerate(chunk['candidate_index']):
             frame, lane, seed = int(frame), int(lane), int(seed)
@@ -83,10 +91,17 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     for candidate in candidates:
         if allowed_candidates is not None and candidate['id'] not in allowed_candidates:
             continue
+        scope = scoped[candidate['event_id']] if analysis_scope is not None else None
+        if scope is not None and not scope['included']:
+            continue
         source = relative_rows.get(candidate['id'])
         evidence = {'event_id': candidate['event_id'], 'pixel_status': candidate['pixel_status'],
                     'pixel_reason': candidate['pixel_reason']}
-        values, reasons = {}, list(origin_issues)
+        values, reasons = {}, [*origin_issues, *geometry_issues]
+        if scope is not None:
+            evidence.update(analysis_scope=scope['scope'], hold_resolution=scope['hold_resolution'])
+            if scope['hold_resolution']:
+                reasons.append(HOLD_REASON)
         for side in ('start', 'end'):
             point = source['endpoints'].get(side) if source else None
             domain = point['relative_beat']['beat_range'] if point and point['relative_beat'] else None
@@ -125,6 +140,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             'coordinate': 'first_numbered_barline_zero', 'origin_issues': sorted(set(origin_issues)),
             'scale_px_per_beat': scale, 'scale_basis': 'shared_observation_geometry',
             'geometry_status': geometry.get('status', 'unavailable'),
+            'geometry_issues': geometry_issues,
             'localization_assumption_px': error, 'unprocessed_motion': gaps, 'tail_beat_extension': [0, 1],
             'limitations': ['All automatic values need video review; missing notes may be undetected.',
                            'Screen landmarks are not verified musical timing.',

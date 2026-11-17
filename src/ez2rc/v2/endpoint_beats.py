@@ -5,7 +5,7 @@ from .contracts import decimal_bpm, exact_ms, ratio, read_ratio
 from .endpoint_ranges import VERSION as ENDPOINT_VERSION, closed
 from .timing import PROJECTION_VERSION
 
-VERSION = 'endpoint-aware-beat-ranges-3'
+VERSION = 'endpoint-aware-beat-ranges-4'
 
 
 def _bounds(value):
@@ -106,6 +106,10 @@ def apply_endpoint_ranges(result, events, resolution, pixels, projection, endpoi
         pixel, timing = pixel_rows[event.id], timing_rows[event.id]
         if pixel['status'] != timing['pixel_status'] or pixel['lane'] != event.lane:
             raise ValueError('endpoint propagation pixel event mismatch')
+        decode_status = pixel.get('decode_status', pixel['status'])
+        expected_status = 'ambiguous' if pixel.get('hold_resolution') else decode_status
+        if pixel['status'] != expected_status:
+            raise ValueError('endpoint propagation scoped status mismatch')
         issues = list(row['reasons'])
         row.update(nominal_duration_beats=row['duration_beats'], duration_beats=None,
                    duration_beat_range=None, diagnostics=[], selected_candidate_id=None)
@@ -124,7 +128,7 @@ def apply_endpoint_ranges(result, events, resolution, pixels, projection, endpoi
                 raise ValueError('selected endpoint propagation candidate absent')
             lane_id, source = candidates[candidate['id']]
             if (lane_id != event.lane or candidate['id'] not in event.candidate_ids
-                    or source['selected'] is not True or source['pixel_status'] != pixel['status']
+                    or source['selected'] is not True or source['pixel_status'] != decode_status
                     or any(source[key] != candidate[key] for key in ('id', 'type', 'start', 'end'))
                     or candidate['type'] != event.type):
                 raise ValueError('selected endpoint propagation candidate mismatch')

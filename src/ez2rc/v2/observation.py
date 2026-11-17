@@ -195,6 +195,7 @@ def cache_keys(song, profile, algo, video_hash):
         "timestamp_policy": algo.timestamp_policy, **decoder_parameters(), **scope})
     observation = stage_key("observation", VERSION, {
         "profile": profile.snapshot, "asset_sha256": profile.asset_hashes,
+        "profile_sha256": profile.source_sha256,
         "template_shapes": [{kind: list(lane.templates[kind].shape[:2]) for kind in KINDS}
                             for lane in profile.lanes],
         "algorithm": algo.observation_parameters(), "opencv_version": cv2.__version__,
@@ -283,7 +284,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
             "video_sha256": video_hash, "capture": reader.metadata,
             "capture_cache_id": capture_cache.id, "alignment_offset_px": list(offset),
             "profile": profile.snapshot, "profile_path": str(song.profile),
-            "profile_sha256": file_hash(song.profile), "asset_sha256": profile.asset_hashes,
+            "profile_sha256": profile.source_sha256, "asset_sha256": profile.asset_hashes,
             "frame_count": count, "candidate_count": candidate_count,
             "exact_repeated_images": repeated,
             "repeat_policy": "provisional exact lane-image equality; motion confirmation pending",
@@ -343,6 +344,9 @@ def _open_observations(path: Path) -> Cache:
     requested_count = 0
     if metadata['profile'] != key['parameters']['profile']:
         raise CacheError('observation profile differs from cache key')
+    if ('profile_sha256' in key['parameters']
+            and metadata['profile_sha256'] != key['parameters']['profile_sha256']):
+        raise CacheError('observation profile hash differs from cache key')
     template_shapes(key['parameters'])
     expected = position_error_metadata(metadata['profile'])
     fields = ('position_calibration', 'position_error_px', 'position_error_reason')

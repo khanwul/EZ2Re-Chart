@@ -17,6 +17,7 @@ from ez2rc.v2.endpoint_ranges import project_endpoint_time_ranges
 from ez2rc.v2.runner import execute
 from ez2rc.v2.storage import read_json, write_json
 from ez2rc.v2.timing import resolve_pixel_timing
+from ez2rc.v2.window import scope_events
 from test_v2_beat_ranges import INTERVAL_TOML, decision, window
 from test_v2_endpoint_ranges import inputs as endpoint_inputs
 from test_v2_origin_adoption import ANCHOR_TOML
@@ -59,6 +60,36 @@ def project(data, model=MODEL):
 
 
 class EndpointBeatTest(unittest.TestCase):
+    def test_scope_hold_keeps_raw_identity_checks_and_withholds_only_held_ranges(self):
+        data = list(inputs())
+        for pixel in data[4]:
+            pixel['reason'] = 'selected'
+        scope = {'events': [
+            {'event_id': 'e0', 'scope': 'requested', 'included': True, 'hold_resolution': False},
+            # A requested alternative does not license a context-only selection.
+            {'event_id': 'e1', 'scope': 'requested', 'included': True, 'hold_resolution': True}]}
+        events, data[4] = scope_events(data[1], data[4], scope)
+        data[0], data[1], data[2] = resolve_pixel_timing(events, data[4], data[5], META, '120',
+            measure_beats=Fraction(4), judgment_calibration=JudgmentCalibration('verified', 'procedural', 7.5, 3.))
+        result = project(data)
+        self.assertEqual(result['bounded_event_count'], 1)
+        self.assertEqual(result['events'][0]['status'], 'bounded')
+        held = result['events'][1]
+        self.assertEqual(held['status'], 'unavailable')
+        self.assertIn('requested_window_membership_uncertain', held['reasons'])
+        self.assertIsNone(held['start_beat_range'])
+        self.assertIsNone(held['end_beat_range'])
+        self.assertIsNone(held['duration_beat_range'])
+        for field, value in (('decode_status', 'incomplete'), ('hold_resolution', False)):
+            bad = deepcopy(data)
+            bad[4][1][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                project(bad)
+        bad = deepcopy(data)
+        bad[4][1]['selected_intervals'][0]['start'] = 'p0'
+        with self.assertRaisesRegex(ValueError, 'candidate mismatch'):
+            project(bad)
+
     def test_exact_join_applies_nominal_offset_once_and_retains_named_sources(self):
         data = inputs(); before = deepcopy(data)
         result = project(data)

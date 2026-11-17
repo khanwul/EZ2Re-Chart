@@ -6,9 +6,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import cv2
+import numpy as np
+
 from ez2rc.v2.cli import main
 from ez2rc.v2.draft import (change_note, create_draft, read_draft, save_draft, seal, describe)
+from ez2rc.v2.observation import open_observations
 from ez2rc.v2.runner import execute
+from ez2rc.v2.storage import CacheWriter
 from test_v2_barline_pipeline import marked_video
 
 
@@ -20,6 +25,70 @@ def empty_draft():
 
 
 class DraftTest(unittest.TestCase):
+    def test_reconstruct_without_template_shapes_saves_unresolved_draft_and_chart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            song = marked_video(root, longnotes=True)
+            _, first = execute(song, output_root=root/'out')
+            observations = open_observations(first/'artifacts/observations')
+            key = deepcopy(observations.manifest['key'])
+            del key['parameters']['template_shapes']
+            key['parameters'].pop('profile_sha256', None)
+            with CacheWriter(root/'out/.cache', key) as writer:
+                for chunk in observations.chunks():
+                    writer.append(**chunk)
+                legacy = writer.commit(observations.manifest['metadata'], validate=open_observations)
+            for name in ('video.mkv', 'profile.toml', 'note.png', 'head.png', 'tail.png'):
+                (root/name).unlink()
+            with patch('ez2rc.v2.capture.av.open', side_effect=AssertionError('no media decoding')):
+                code, run = execute(song, output_root=root/'out', observation_cache=legacy.path)
+            self.assertEqual(code, 2, (run/'run.json').read_text())
+            self.assertEqual(json.loads((run/'artifacts/barline-grid.json').read_text())['status'], 'supported')
+            self.assertEqual(json.loads((run/'chart.json').read_text())['status'], 'partial')
+            draft = read_draft(run/'draft.json')
+            self.assertEqual(len(draft['notes']), 6)
+            self.assertEqual(draft['projection']['geometry_status'], 'unavailable')
+            self.assertIn('template_geometry_unavailable', draft['projection']['geometry_issues'])
+            for note in draft['notes']:
+                self.assertEqual(note['status'], 'unresolved')
+                self.assertIsNone(note['start_beat'])
+                self.assertIsNone(note['end_beat'])
+                self.assertIn('template_geometry_unavailable', note['issues'])
+                self.assertTrue(note['evidence']['start']['witnesses'])
+            self.assertTrue((run/'review.html').is_file())
+
+    def test_frame_marker_uses_original_video_coordinates_after_alignment_and_edit(self):
+        from ez2rc.v2.review import export_frame
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            song = marked_video(root, translated=(3, 5))
+            code, run = execute(song, output_root=root/'out')
+            self.assertEqual(code, 2, (run/'run.json').read_text())
+            draft = read_draft(run/'draft.json')
+            self.assertEqual(draft['source']['alignment_offset_px'], [3, 5])
+            original = draft['notes'][0]
+            draft = change_note(draft, 'edit', identity=original['id'], fields={'start_beat': [10, 1]})
+            path = root/'edited.json'
+            save_draft(path, draft)
+            draft = read_draft(path)
+            witness = original['evidence']['start']['witnesses'][0]
+            self.assertEqual(draft['notes'][0]['evidence'], original['evidence'])
+            stamp = export_frame(draft, root/'marked.png', identity=original['id'])
+            self.assertEqual(stamp.frame_id, witness['frame_id'])
+            export_frame(draft, root/'raw.png', seconds=witness['timestamp_ms']/1000)
+            raw, marked = (cv2.imread(str(root/name)) for name in ('raw.png', 'marked.png'))
+            source_y = round(witness['y_px'] + 5)
+            np.testing.assert_array_equal(marked[source_y], np.tile([0, 0, 255], (raw.shape[1], 1)))
+            marked[source_y] = raw[source_y]
+            np.testing.assert_array_equal(marked, raw)
+            # Older drafts cannot safely assume a missing alignment is zero.
+            legacy = deepcopy(draft)
+            del legacy['source']['alignment_offset_px']
+            seal(legacy)
+            with self.assertRaisesRegex(ValueError, 'no source alignment'):
+                export_frame(legacy, root/'legacy.png', identity=original['id'])
+            export_frame(legacy, root/'legacy-raw.png', seconds=witness['timestamp_ms']/1000)
+
     def test_adopt_keeps_the_alternative_and_displays_the_current_revision_once(self):
         original = empty_draft()
         alternative = change_note(original, 'add', fields={'start_beat': [1, 1]})['notes'][0]

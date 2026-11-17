@@ -6,17 +6,62 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 from ez2rc.v2.capture import CaptureError, TimestampClock, VideoReader
 from ez2rc.v2.config import ConfigError, load_algorithm, load_profile, load_song
-from ez2rc.v2.observation import cache_keys, collect, open_observations
+from ez2rc.v2.observation import cache_keys, collect, observe_frame, open_observations
 from ez2rc.v2.runner import execute
 from ez2rc.v2.storage import Cache, CacheError, CacheWriter, digest, file_hash, stage_key, write_json
 from v2_fixtures import fixture
 
 
 class V2CaptureCacheTest(unittest.TestCase):
+    def test_profile_identity_is_from_parsed_bytes_even_if_file_changes_during_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, _ = fixture(root)
+            song = load_song(path)
+            original = song.profile.read_bytes()
+            original_hash = file_hash(song.profile)
+            def mutate_profile(*args, **kwargs):
+                song.profile.write_bytes(original.replace(b'judge_y = 72.0', b'judge_y = 73.0'))
+                return observe_frame(*args, **kwargs)
+            with patch('ez2rc.v2.observation.observe_frame', side_effect=mutate_profile):
+                code, run = execute(path, output_root=root/'out')
+            self.assertEqual(code, 2, (run/'run.json').read_text())
+            cache = run/'artifacts/observations'
+            manifest = open_observations(cache).manifest
+            metadata = manifest['metadata']
+            self.assertEqual(metadata['profile']['judge_y'], 72.0)
+            self.assertEqual(metadata['profile_sha256'], original_hash)
+            self.assertEqual(manifest['key']['parameters']['profile_sha256'], original_hash)
+            self.assertEqual(json.loads((run/'run.json').read_text())['input']['profile_sha256'], original_hash)
+            self.assertNotEqual(metadata['profile_sha256'], file_hash(song.profile))
+            code, rejected = execute(path, output_root=root/'out', observation_cache=cache)
+            self.assertEqual(code, 1)
+            self.assertIn('recording profile changed', json.loads((rejected/'run.json').read_text())['failure']['message'])
+            song.profile.write_bytes(original)
+            code, replay = execute(path, output_root=root/'out', observation_cache=cache)
+            self.assertEqual(code, 2, (replay/'run.json').read_text())
+
+    def test_profile_hash_does_not_reread_file_after_parsing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, _ = fixture(root)
+            source = load_song(path).profile
+            original_hash = file_hash(source)
+            imread = cv2.imread
+            def mutate_profile(*args, **kwargs):
+                source.write_text(source.read_text().replace('judge_y = 72.0', 'judge_y = 73.0'))
+                return imread(*args, **kwargs)
+            with patch('ez2rc.v2.config.cv2.imread', side_effect=mutate_profile):
+                profile = load_profile(source)
+            self.assertEqual(profile.judge_y, 72.0)
+            self.assertEqual(profile.source_sha256, original_hash)
+            self.assertNotEqual(profile.source_sha256, file_hash(source))
+
     def test_vfr_nonzero_pts_and_partial_range_share_origin(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

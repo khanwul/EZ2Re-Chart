@@ -17,7 +17,7 @@ from ez2rc.v2.runner import execute
 from test_v2_timing_resolver import moving_taps
 
 
-def marked_video(root, *, longnotes=False):
+def marked_video(root, *, longnotes=False, translated=(0, 0)):
     song=moving_taps(root)
     text=song.read_text().replace('bpm = "191.910"','bpm = "150"\nmeasure_beats = [1, 1]')
     song.write_text(text)
@@ -46,6 +46,9 @@ def marked_video(root, *, longnotes=False):
                     if lower<upper:image[lower:upper,left:right]=100
                     for top,patch in ((y,heads),(tail,tails)):
                         if 0<=top and top+7<=65:image[top:top+7,left:right]=patch
+            if translated != (0, 0):
+                dx, dy = translated
+                image = cv2.warpAffine(image, np.float32([[1, 0, dx], [0, 1, dy]]), (96, 96))
             frame=av.VideoFrame.from_ndarray(image,format='bgr24')
             frame.pts,frame.time_base=frame_id*20,F(1,1000)
             for packet in stream.encode(frame):container.mux(packet)

@@ -11,12 +11,13 @@ from dataclasses import replace
 from .contracts import Chart, Note, Timing, exact_ms, read_ratio
 from .relative_beats import bounds
 from .observed_geometry import LOCALIZATION_SCOPE
+from .window import HOLD_REASON
 
-VERSION = 'verified-relative-musical-events-6'
+VERSION = 'verified-relative-musical-events-7'
 
 
 def resolve_spatial_chart(chart, events, relative, rhythm, barlines, profile, *, physical_review=None,
-                          calibration_verification=None):
+                          calibration_verification=None, analysis_scope=None):
     audit={'format':'ez2rc.spatial-resolution','schema_version':1,'algorithm_version':VERSION,
            'coordinate':'first_barline_zero','status':'unavailable','accepted_note_count':0,
            'decisions':[],'reasons':[],
@@ -25,6 +26,9 @@ def resolve_spatial_chart(chart, events, relative, rhythm, barlines, profile, *,
         audit['physical_review'] = physical_review.receipt()
     if calibration_verification is not None:
         audit['calibration_verification'] = calibration_verification.receipt()
+    scoped = {r['event_id']: r for r in analysis_scope['events']} if analysis_scope is not None else {}
+    if analysis_scope is not None and {e.id for e in events} != {k for k, r in scoped.items() if r['included']}:
+        raise ValueError('spatial resolution events differ from analysis scope')
     if relative is None:
         audit['reasons']=['spatial_reference_unavailable']
         return chart,events,audit
@@ -82,6 +86,8 @@ def resolve_spatial_chart(chart, events, relative, rhythm, barlines, profile, *,
     for event in events:
         rows=by_event[event.id]
         reasons=list(prerequisites)
+        if scoped.get(event.id, {}).get('hold_resolution'):
+            reasons.append(HOLD_REASON)
         row=rows[0] if len(rows)==1 else None
         if row is None:reasons.append('no_single_selected_physical_note')
         else:

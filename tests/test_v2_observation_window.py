@@ -1,6 +1,7 @@
 """Procedural temporal boundaries, provenance and scoped output contracts."""
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -22,6 +23,8 @@ from ez2rc.v2.storage import CacheError, CacheWriter
 from ez2rc.v2.window import analysis_scope, scope_events, song_window, window_settings
 from v2_fixtures import fixture
 from test_v2_timing_resolver import moving_taps, timing_input, resolve
+from test_v2_barline_pipeline import marked_video
+from test_v2_shared_judgment import UNKNOWN_TOML
 
 
 def scene():
@@ -136,6 +139,66 @@ class ObservationWindowScopeTest(unittest.TestCase):
 
 
 class ObservationWindowPipelineTest(unittest.TestCase):
+    def test_boundary_hold_survives_spatial_resolution_draft_and_endpoint_ranges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            song = marked_video(root)
+            profile = root/'profile.toml'
+            profile.write_text(profile.read_text() + '''\n[position_calibration]
+status = "verified"
+version = "procedural-template-top"
+scope = "profile_endpoints"
+error_px = 1.0
+''')
+            song.write_text(song.read_text().replace('[input]', '[input]\nend_ms = 20.0\ncontext_after_ms = 2500.0')
+                            + '\n[timing.rhythm_grid]\nsubdivisions = [4]\n')
+            code, first = execute(song, output_root=root/'out')
+            self.assertEqual(code, 2, (first/'run.json').read_text())
+            run = json.loads((first/'run.json').read_text())
+            calibration = {'format': 'ez2rc.spatial-calibration', 'schema_version': 1,
+                           'version': 'generated-reference', 'localization_error_px': 1,
+                           'endpoint_calibrations': []}
+            for stage in ('observation', 'motion', 'decode'):
+                calibration[stage+'_cache_id'] = run['stages'][stage]['cache_id']
+            data = json.dumps(calibration).encode()
+            (root/'calibration.json').write_bytes(data)
+            settings = song.read_text() + ('\n[timing.spatial_calibration]\npath = "calibration.json"\n'
+                                          f'sha256 = "{hashlib.sha256(data).hexdigest()}"\n')
+            for endpoint_ranges in (False, True):
+                with self.subTest(endpoint_ranges=endpoint_ranges):
+                    song.write_text(settings + ('\n' + UNKNOWN_TOML
+                        + 'endpoint_component = "calibration_and_localization"\n' if endpoint_ranges else ''))
+                    code, result = execute(song, output_root=root/'out')
+                    self.assertEqual(code, 2, (result/'run.json').read_text())
+                    scope = json.loads((result/'artifacts/analysis-scope.json').read_text())
+                    held = {e['event_id'] for e in scope['events'] if e['hold_resolution']}
+                    self.assertEqual(len(held), 1)
+                    chart = json.loads((result/'chart.json').read_text())
+                    self.assertEqual(chart['status'], 'partial')
+                    self.assertEqual(chart['notes'], [])
+                    self.assertEqual({e['id'] for e in chart['unresolved']}, held)
+                    audit = json.loads((result/'artifacts/spatial-resolution.json').read_text())
+                    self.assertEqual(audit['reasons'], [])  # All spatial prerequisites are satisfied.
+                    self.assertTrue(all(not r['accepted'] and
+                        'requested_window_membership_uncertain' in r['reasons'] for r in audit['decisions']))
+                    draft = json.loads((result/'draft.json').read_text())
+                    self.assertTrue(draft['notes'])
+                    for note in draft['notes']:
+                        self.assertEqual(note['status'], 'unresolved')
+                        self.assertIn('requested_window_membership_uncertain', note['issues'])
+                        self.assertTrue(note['evidence']['hold_resolution'])
+                    if endpoint_ranges:
+                        ranges = json.loads((result/'artifacts/beat-ranges.json').read_text())
+                        self.assertEqual(ranges['bounded_event_count'], 0)
+                        self.assertTrue(all(r['start_beat_range'] is None and
+                            'requested_window_membership_uncertain' in r['reasons'] for r in ranges['events']))
+                    code, replay = execute(song, output_root=root/'out',
+                                           observation_cache=first/'artifacts/observations')
+                    self.assertEqual(code, 2, (replay/'run.json').read_text())
+                    for name in ('chart.json', 'artifacts/events.json', 'artifacts/spatial-resolution.json'):
+                        self.assertEqual((result/name).read_bytes(), (replay/name).read_bytes())
+                    self.assertEqual(json.loads((replay/'draft.json').read_text())['notes'], draft['notes'])
+
     def test_vfr_range_context_cache_identity_and_no_duplicate_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); path, _ = fixture(root)

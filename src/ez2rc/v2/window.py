@@ -9,6 +9,7 @@ import math
 import numpy as np
 
 VERSION = 'observation-window-1'
+HOLD_REASON = 'requested_window_membership_uncertain'
 
 
 def window_settings(start_ms, end_ms, before_ms=0., after_ms=0.):
@@ -163,7 +164,8 @@ def scope_events(events, pixels, scope):
         row = by_id[event.id]
         if not row['included']:
             continue
-        p = {**pixel, 'analysis_scope': row['scope']}
+        p = {**pixel, 'analysis_scope': row['scope'], 'decode_status': pixel['status'],
+             'hold_resolution': row['hold_resolution']}
         if row['hold_resolution']:
             reason = 'requested-window membership is uncertain; auxiliary observations retained'
             p = {**p, 'status': 'ambiguous', 'reason': p['reason'] + '; ' + reason}

@@ -12,9 +12,10 @@ import numpy as np
 from .contracts import (Chart, Event, Metadata, Note, Timing, decimal_bpm, exact_ms,
                         finite_number, origin_payload, origin_schema, ratio)
 from .motion import STATUS, timeline
+from .window import HOLD_REASON
 
 PROJECTION_VERSION = "scroll-time-projection-1"
-RESOLUTION_VERSION = "explicit-timing-2"
+RESOLUTION_VERSION = "explicit-timing-3"
 
 
 class ScrollTimeMap:
@@ -181,6 +182,8 @@ def resolve_pixel_timing(events, pixels, projection, metadata, bpm, *, beat_zero
         reasons, times = [], {'start': None, 'end': None}
         if pixel['status'] != 'resolved':
             reasons.append('pixel_' + pixel['status'])
+        if pixel.get('hold_resolution'):
+            reasons.append(HOLD_REASON)
         if len(chosen) != 1:
             reasons.append('no_unique_selected_candidate')
         else:

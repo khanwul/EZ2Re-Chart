@@ -88,7 +88,10 @@ def export_frame(draft, output, *, identity=None, side='start', seconds=None, vi
         if not point or not point['witnesses']:
             raise ValueError('no video witness for this endpoint; use --time to inspect a region')
         witness = point['witnesses'][0]
-        frame_id, y = witness['frame_id'], witness['y_px']
+        offset = draft['source'].get('alignment_offset_px')
+        if offset is None:
+            raise ValueError('draft has no source alignment; regenerate it or use --time to inspect the video')
+        frame_id, y = witness['frame_id'], witness['y_px'] + offset[1]
     elif seconds is None or seconds < 0:
         raise ValueError('supply a note ID or a nonnegative --time in seconds')
     output = Path(output)

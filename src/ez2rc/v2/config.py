@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
 from pathlib import Path
+import hashlib
 import math
 import tomllib
 
@@ -31,14 +32,18 @@ def table(value, allowed, required=()):
 
 
 def load_toml(path: Path) -> dict:
+    return _load_toml_with_hash(path)[0]
+
+
+def _load_toml_with_hash(path: Path) -> tuple[dict, str]:
     try:
-        with path.open("rb") as file:
-            data = tomllib.load(file)
+        source = path.read_bytes()
+        data = tomllib.loads(source.decode('utf-8'))
     except (OSError, ValueError) as exc:
         raise ConfigError(f"cannot read config {path}: {exc}") from exc
     if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
         raise ConfigError(f"unsupported v2 schema_version in {path}; expected integer 1")
-    return data
+    return data, hashlib.sha256(source).hexdigest()
 
 
 def string(value, name):
@@ -389,6 +394,7 @@ class Profile:
     lanes: list[Lane]
     snapshot: dict
     asset_hashes: dict[str, str]
+    source_sha256: str
     position_calibration: PositionCalibration | None = None
 
     @property
@@ -531,7 +537,8 @@ def load_algorithm(path: Path | None) -> AlgorithmConfig:
 
 
 def load_profile(path: Path) -> Profile:
-    data = table(load_toml(path), {"schema_version", "id", "game", "mode", "resolution",
+    data, source_sha256 = _load_toml_with_hash(path)
+    data = table(data, {"schema_version", "id", "game", "mode", "resolution",
                  "judge_y", "effect_top", "beat_roi", "alignment", "calibration", "position_calibration", "draft_offsets_px", "draft_localization_error_px", "expected_fps", "lanes"},
                  {"id", "game", "mode", "resolution", "judge_y", "effect_top", "beat_roi",
                   "alignment", "calibration", "lanes"})
@@ -607,4 +614,4 @@ def load_profile(path: Path) -> Profile:
     if data["mode"] != f"{len(lanes)}k":
         raise ConfigError("profile mode does not match its lane count")
     return Profile(data["id"], data["game"], data["mode"], (width, height), judge, effect,
-                   beat, band, shift, calibrations, lanes, data, hashes, position)
+                   beat, band, shift, calibrations, lanes, data, hashes, source_sha256, position)

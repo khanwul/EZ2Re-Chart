@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from fractions import Fraction as F
 import hashlib
 import json
@@ -12,6 +13,7 @@ from ez2rc.v2.export import chart_payload, events_payload, read_chart, read_even
 from ez2rc.v2.runner import execute
 from ez2rc.v2.spatial_resolution import resolve_spatial_chart
 from ez2rc.v2.timing import beat_to_ms
+from ez2rc.v2.window import scope_events
 from test_v2_barline_pipeline import marked_video
 
 
@@ -130,13 +132,26 @@ error_px = 1.0
             from ez2rc.v2.observation import open_observations
             obs=open_observations(first/'artifacts/observations')
             decoded=open_decode(first/'artifacts/decode')
-            events,_=output_events(decoded)
+            events,pixels=output_events(decoded)
             original=Chart(Metadata('game','mode',2,'generated','test'),Timing('150',None,F(1)),
                            unresolved=events,pending_stages=('timing',))
             relative=json.loads((automatic/'artifacts/relative-beats.json').read_text())
             rhythm=json.loads((automatic/'artifacts/rhythm-candidates.json').read_text())
             bars=json.loads((automatic/'artifacts/barline-grid.json').read_text())
             profile=obs.manifest['metadata']['profile']
+            # An event may be requested through an alternative while its
+            # selected interpretation is context-only. Keep that hold even
+            # with a unique, otherwise verified spatial solution.
+            scope = {'events': [{'event_id': e.id, 'scope': 'requested', 'included': True,
+                                 'hold_resolution': i == 0} for i, e in enumerate(events)]}
+            scoped, _ = scope_events(events, pixels, scope)
+            scoped_chart, updated, audit = resolve_spatial_chart(replace(original, unresolved=scoped),
+                scoped, relative, rhythm, bars, profile, analysis_scope=scope)
+            self.assertEqual(scoped_chart.status, 'partial')
+            self.assertEqual(len(scoped_chart.notes), len(events)-1)
+            self.assertEqual([e.id for e in scoped_chart.unresolved], [events[0].id])
+            self.assertEqual(updated[0].status, 'ambiguous')
+            self.assertEqual(audit['decisions'][0]['reasons'], ['requested_window_membership_uncertain'])
             # Older references retain their original reconstruction semantics,
             # but a profile endpoint bound does not certify every template alias.
             from ez2rc.v2.motion import open_motion
