@@ -532,7 +532,7 @@ def load_algorithm(path: Path | None) -> AlgorithmConfig:
 
 def load_profile(path: Path) -> Profile:
     data = table(load_toml(path), {"schema_version", "id", "game", "mode", "resolution",
-                 "judge_y", "effect_top", "beat_roi", "alignment", "calibration", "position_calibration", "lanes"},
+                 "judge_y", "effect_top", "beat_roi", "alignment", "calibration", "position_calibration", "draft_offsets_px", "draft_localization_error_px", "expected_fps", "lanes"},
                  {"id", "game", "mode", "resolution", "judge_y", "effect_top", "beat_roi",
                   "alignment", "calibration", "lanes"})
     for key in ("id", "game", "mode"):
@@ -541,6 +541,8 @@ def load_profile(path: Path) -> Profile:
     if not isinstance(resolution, list) or len(resolution) != 2:
         raise ConfigError("resolution requires width and height")
     width, height = [integer(v, "resolution", 1) for v in resolution]
+    if 'expected_fps' in data:
+        number(data['expected_fps'], 'expected_fps', .001)
     judge = number(data["judge_y"], "judge_y", 0)
     effect = number(data["effect_top"], "effect_top", 0)
     if not effect <= judge < height:
@@ -566,6 +568,10 @@ def load_profile(path: Path) -> Profile:
             raise ConfigError("unverified calibration cannot supply assumed corrections")
         calibrations[kind] = Calibration(**value)
     position = read_position_calibration(data['position_calibration']) if 'position_calibration' in data else None
+    for kind, offset in table(data.get('draft_offsets_px', {}), {'tap', 'head', 'tail'}).items():
+        number(offset, f'draft_offsets_px.{kind}')
+    if 'draft_localization_error_px' in data:
+        number(data['draft_localization_error_px'], 'draft_localization_error_px', 0)
     if not isinstance(data["lanes"], list) or not data["lanes"]:
         raise ConfigError("profile requires lanes")
     lanes, hashes, loaded = [], {}, {}

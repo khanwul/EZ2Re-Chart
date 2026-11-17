@@ -21,6 +21,23 @@ from .storage import reject_constant
 VERSION = 'spatial-relative-beats-10'
 
 
+def screen_end_reference(reference, decoded):
+    """Remove musical tail extensions before geometry and grid inference.
+
+    Preserve pixel landmark definitions and the original input document. This
+    is the draft release convention, not a claim of verified release timing.
+    """
+    from copy import deepcopy
+    result = deepcopy(reference)
+    tails = {e['id'] for lane in lanes(decoded) for e in lane['endpoints'] if e['kind'] == 'tail'}
+    removed = []
+    for calibration in result['endpoint_calibrations']:
+        if calibration['endpoint_id'] in tails and 'beat_shift' in calibration:
+            shift = calibration.pop('beat_shift')
+            removed.append({'endpoint_id': calibration['endpoint_id'], 'beat_shift': shift})
+    return result, {'convention': 'screen_end_without_musical_extension', 'removed_tail_shifts': removed}
+
+
 def load_spatial_calibration(request):
     data = Path(request['path']).read_bytes()
     if hashlib.sha256(data).hexdigest() != request['sha256']:

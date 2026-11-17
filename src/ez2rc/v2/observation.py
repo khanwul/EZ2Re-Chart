@@ -205,6 +205,8 @@ def cache_keys(song, profile, algo, video_hash):
 
 def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Path):
     from .window import song_window, has_context, in_interval
+    from .setup import check_video
+    check_video(song.video, profile.resolution, profile.snapshot.get('expected_fps'))
     window = song_window(song)
     video_hash = file_hash(song.video)
     capture_key, observation_key = cache_keys(song, profile, algo, video_hash)
@@ -222,7 +224,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
     reader = VideoReader(song.video, **window['observation'],
                          timestamp_policy=algo.timestamp_policy)
     buffer = []
-    previous_signature, repeat_group = None, None
+    previous_signature, repeat_group, previous_ms = None, None, None
     count = candidate_count = repeated = requested_count = 0
     with CacheWriter(root, capture_key) as capture_writer, CacheWriter(root, observation_key) as writer:
         def flush():
@@ -249,6 +251,10 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
         for frame in reader:
             if (frame.bgr.shape[1], frame.bgr.shape[0]) != profile.resolution:
                 raise ValueError("video resolution changed during decode")
+            fps = profile.snapshot.get('expected_fps')
+            if fps is not None and previous_ms is not None and abs(frame.stamp.timestamp_ms-previous_ms-1000/fps) > 1:
+                raise ValueError('video timestamps do not match the fixed recording FPS; check dropped frames or variable frame rate')
+            previous_ms = frame.stamp.timestamp_ms
             observation = observe_frame(frame, profile, algo, offset)
             if observation["signature"] != previous_signature:
                 repeat_group = frame.stamp.frame_id

@@ -27,13 +27,16 @@ from .reference_link import VERSION as REFERENCE_LINK_VERSION, link_reference_or
 from .origin import VERSION as ORIGIN_VERSION, adopt_reference_origin
 from .beat_ranges import project_beat_ranges
 from .endpoint_ranges import VERSION as ENDPOINT_RANGES_VERSION, project_endpoint_time_ranges
-from .relative_beats import load_reference, load_spatial_calibration, project_relative_beats
+from .relative_beats import load_reference, load_spatial_calibration, project_relative_beats, screen_end_reference
 from .rhythm import rhythm_candidates
 from .barline_grid import infer_barline_grid, spatial_reference
 from .spatial_resolution import resolve_spatial_chart
 from .physical_review import load_physical_review
 from .calibration_verification import load_calibration_verification
 from .window import song_window, has_context, analysis_scope, scope_events
+from .draft import create_draft, save_draft
+from .draft_projection import project_draft
+from .review import write_review
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
 
@@ -218,6 +221,8 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             relative_input = spatial_reference(barlines,spatial_calibration)
             spatial_input_sha = song.spatial_calibration['sha256']
         if relative_input is not None:
+            relative_input, end_policy = screen_end_reference(relative_input, decoded)
+            run['end_policy'] = end_policy
             relative = project_relative_beats(observations, motion, decoded, relative_input,
                                               measure_beats=song.measure_beats, rhythm_grid=song.rhythm_grid,
                                               physical_review=physical_review)
@@ -314,6 +319,20 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         active = "export"
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
+        draft_projection = project_draft(observations, motion, decoded, barlines,
+            allowed_candidates={c['id'] for p in pixel_intervals
+                                for c in (*p['selected_intervals'], *p['alternatives'])})
+        draft = create_draft(draft_projection, asdict(chart.metadata), song.bpm,
+                            {'video': str(song.video), 'video_sha256': meta['video_sha256'],
+                             'run_id': run_id, 'code': run['code'],
+                             'observation_cache_id': observations.id, 'motion_cache_id': motion.id,
+                             'decode_cache_id': decoded.id,
+                             'analysis_window': song_window(song)})
+        save_draft(root / 'draft.json', draft)
+        write_review(root / 'review.html', draft)
+        run['draft'] = {'path': 'draft.json', 'notes': len(draft['notes']),
+                        'unresolved': sum(n['status'] == 'unresolved' for n in draft['notes']),
+                        'document_sha256': draft['document_sha256']}
         write_outputs(root, chart, events, observation_ref="artifacts/observations/manifest.json",
                       motion_ref="artifacts/motion/manifest.json", fusion_ref="artifacts/fusion/manifest.json",
                       decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,

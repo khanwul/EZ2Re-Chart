@@ -11,6 +11,7 @@ difficulty = "SHD"
 [timing]
 mode = "fixed"
 bpm = "200"
+measure_beats = [4, 1]
 
 # Optional common settings, resolved relative to this file:
 # [algorithm]

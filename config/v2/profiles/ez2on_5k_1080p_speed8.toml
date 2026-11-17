@@ -3,6 +3,7 @@ id = "ez2on_5k_1080p_speed8"
 game = "ez2on_reboot_r"
 mode = "5k"
 resolution = [1920, 1080]
+expected_fps = 60
 judge_y = 824.0
 effect_top = 790.0
 beat_roi = [728, 844, 731, 851]
