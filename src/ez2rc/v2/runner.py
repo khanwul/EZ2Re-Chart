@@ -64,7 +64,9 @@ def attach_cache(cache: Cache, destination: Path):
 
 
 def execute(config_path: Path, *, output_root: Path = Path("out"),
-            cache_root: Path | None = None, observation_cache: Path | None = None) -> tuple[int, Path]:
+            cache_root: Path | None = None, observation_cache: Path | None = None, progress=None) -> tuple[int, Path]:
+    report = progress or (lambda message: None)
+    report("Preparing project")
     song = load_song(config_path)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12]
     root = output_root / safe_component(song.title) / safe_component(song.difficulty) / run_id
@@ -88,8 +90,9 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             profile = load_profile(song.profile)
             run["input"]["asset_sha256"] = profile.asset_hashes
             active = "observation"
-            capture, observations, reused = collect(song, profile, algorithm, cache_root or output_root / ".cache")
+            capture, observations, reused = collect(song, profile, algorithm, cache_root or output_root / ".cache", progress=report)
         else:
+            report("Loading observation cache")
             observations = open_observations(observation_cache)
             meta = observations.manifest["metadata"]
             params = observations.manifest["key"]["parameters"]
@@ -130,6 +133,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                     or capture.manifest['metadata'].get('analysis_window') != declared_window):
                 raise ValueError("capture lineage or analysis interval differs from the configuration")
             reused = True
+        report("Observation complete" + (" (cache reused)" if reused else ""))
         meta = observations.manifest["metadata"]
         if meta.get("frame_cadence", {}).get("irregular_interval_count", 0):
             run["warnings"] = [{"code": "irregular_frame_intervals", **meta["frame_cadence"],
@@ -146,6 +150,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             attach_cache(cache, root / "artifacts" / ("observations" if stage == "observation" else stage))
         motion = None
         for active in ("motion", "fusion", "decode"):
+            report(f"{active}: processing")
             run["stages"][active]["status"] = "running"
             write_json(root / "run.json", run)
             stage_started = time.monotonic()
@@ -164,7 +169,9 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                       "parents": cache.manifest["key"]["parents"],
                                       "artifact_ref": f"artifacts/{active}/manifest.json"}
             attach_cache(cache, root / "artifacts" / active)
+            report(f"{active}: complete" + (" (cache reused)" if reused else ""))
         active = "timing"
+        report("timing: processing")
         scope_ref, scope = None, None
         if has_context(song_window(song)):
             scope = analysis_scope(observations, motion, decoded, song_window(song))
@@ -322,6 +329,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             run['stages']['timing'].update(calibration_verification_ref=calibration_verification_ref,
                                           calibration_verification=calibration_verification.receipt())
         active = "export"
+        report("export: saving chart and review")
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
         draft_projection = project_draft(observations, motion, decoded, barlines,

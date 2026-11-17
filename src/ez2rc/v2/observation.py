@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
+import av
 import cv2
 import numpy as np
 
@@ -209,6 +211,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
     from .window import song_window, has_context, in_interval
     from .setup import check_video
     report = progress or (lambda message: None)
+    report("Observation: checking video and cache")
     check_video(song.video, profile.resolution, profile.snapshot.get('expected_fps'))
     window = song_window(song)
     video_hash = file_hash(song.video)
@@ -223,14 +226,28 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
         return capture_cache, observations, True
     except CacheError:
         pass
+    report("Observation: aligning video")
     offset = probe_alignment(song, profile, algo)
     reader = VideoReader(song.video, **window['observation'],
                          timestamp_policy=algo.timestamp_policy)
+    # Duration is only a display estimate; decoding and validation retain PTS.
+    end_ms = window['observation']['end_ms']
+    if progress is not None:
+        with av.open(str(song.video)) as container:
+            stream = container.streams.video[0]
+            if stream.duration is not None and stream.time_base is not None:
+                duration_ms = float(stream.duration * stream.time_base * 1000)
+                if duration_ms > 0:
+                    end_ms = min(end_ms, duration_ms) if end_ms is not None else duration_ms
+    from .progress import frame_progress
+    start_ms = window['observation']['start_ms']
     buffer = []
     previous_signature, repeat_group, previous_ms = None, None, None
     count = candidate_count = repeated = requested_count = 0
     cadence = {"irregular_interval_count": 0, "max_interval_ms": 0.0,
                "first_irregular_frame": None, "expected_fps": profile.snapshot.get("expected_fps")}
+    last_report = time.monotonic()
+    report(frame_progress(0, start_ms, start_ms, end_ms))
     with CacheWriter(root, capture_key) as capture_writer, CacheWriter(root, observation_key) as writer:
         def flush():
             stamps = [f.stamp for f, _, _ in buffer]
@@ -276,6 +293,10 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
                 repeated += 1
             previous_signature = observation["signature"]
             count += 1
+            now = time.monotonic()
+            if now - last_report >= 2:
+                report(frame_progress(count, frame.stamp.timestamp_ms, start_ms, end_ms))
+                last_report = now
             requested_count += int(in_interval(frame.stamp.timestamp_ms, window['requested']))
             candidate_count += len(observation["scores"])
             # Keep only the timestamp alongside features, never full frames.
@@ -287,6 +308,8 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
             flush()
         if not requested_count:
             raise ValueError('no frames in the requested analysis interval')
+        report(frame_progress(count, previous_ms, start_ms, end_ms, complete=True))
+        report(f"Observation: {count} frames processed; verifying and saving cache")
         # Detect external input mutation before publishing derived evidence.
         if file_hash(song.video) != video_hash:
             raise ValueError("video changed during analysis")

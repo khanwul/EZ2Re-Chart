@@ -50,6 +50,7 @@ def main(argv=None):
     for name, description in (("extract", "collect video evidence and reconstruct a chart"),
                               ("reconstruct", "reuse observation evidence without decoding video")):
         command = commands.add_parser(name, help=description)
+        command.add_argument("--no-progress", action="store_true", help="hide progress messages")
         command.add_argument("config", type=Path, help="v2 song TOML")
         command.add_argument("--output", type=Path, default=Path("out"))
         if name == "extract":
@@ -103,9 +104,15 @@ def main(argv=None):
             print(f"Saved draft revision {edited['revision']}: {destination}")
             print(f"{args.command}: {edited['history'][-1]['id']}")
             return 0
-        code, root = execute(args.config, output_root=args.output,
-                             cache_root=getattr(args, "cache_root", None),
-                             observation_cache=getattr(args, "observations", None))
+        from .progress import ProgressDisplay
+        progress = ProgressDisplay(sys.stderr)
+        try:
+            code, root = execute(args.config, output_root=args.output,
+                                 cache_root=getattr(args, "cache_root", None),
+                                 observation_cache=getattr(args, "observations", None),
+                                 progress=None if args.no_progress else progress)
+        finally:
+            progress.close()
         run = read_json(root / "run.json", "ez2rc.run", schema_versions=(1, 2))
         print(f"{run['status']}: {root}")
         if 'draft' in run:
