@@ -675,9 +675,13 @@ def review_events(lane, candidates, endpoints, config, best):
     return events
 
 
-def summarize_lane(lane, sites, endpoints, body, config):
+def summarize_lane(lane, sites, endpoints, body, config, *, progress=None):
+    report = progress or (lambda message: None)
+    report(f"decode / lane {lane + 1}: building interval candidates")
     tokens, candidates, omitted = interval_candidates(lane, sites, endpoints, body, config)
+    report(f"decode / lane {lane + 1}: selecting among {len(candidates)} candidates")
     best = ordered_dp(len(tokens), candidates, config.ambiguity_cost)
+    report(f"decode / lane {lane + 1}: resolving review events")
     events = review_events(lane, candidates, endpoints, config, best)
     return {'format': 'ez2rc.decode-lane', 'schema_version': 1, 'lane': lane,
             'body_support_runs_px': [[float(a), float(b)] for a, b in body.runs],
@@ -730,9 +734,13 @@ def _lane_input(observations, fusion, lane):
     return ledger, obs['scores'], obs['flags'], {k: v[order] for k, v in cells.items()}
 
 
-def _infer_lane(observations, fusion, lane, clock, meta, config):
+def _infer_lane(observations, fusion, lane, clock, meta, config, *, progress=None):
+    report = progress or (lambda message: None)
+    report(f"decode / lane {lane + 1}: loading evidence")
     ledger, scores, flags, cells = _lane_input(observations, fusion, lane)
+    report(f"decode / lane {lane + 1}: associating endpoints")
     sites, endpoints = endpoint_sites(lane, ledger, scores, flags, clock, meta, config)
+    report(f"decode / lane {lane + 1}: measuring note bodies")
     shapes = template_shapes(observations.manifest['key']['parameters'])
     footprints = None
     if shapes is not None:
@@ -742,10 +750,11 @@ def _infer_lane(observations, fusion, lane, clock, meta, config):
         endpoint_footprints(endpoints, ledger, flags, heights, offsets)
         footprints = shared_body_footprints(sites, endpoints, config)
     return summarize_lane(lane, sites, endpoints,
-                          BodyEvidence(cells, meta['grid_px'], config, clock, footprints), config)
+                          BodyEvidence(cells, meta['grid_px'], config, clock, footprints), config, progress=progress)
 
 
-def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfig, root: Path):
+def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfig, root: Path, *, progress=None):
+    from .progress import WorkProgress
     if (motion.manifest['key']['parents'] != [observations.id]
             or fusion.manifest['key']['parents'] != [observations.id, motion.id]):
         raise ValueError('decode parent lineage mismatch')
@@ -766,8 +775,10 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
     counts = dict.fromkeys(('resolved', 'ambiguous', 'incomplete'), 0)
     candidate_count = endpoint_count = 0
     with CacheWriter(root, key) as writer:
+        work = WorkProgress(progress, 'decode / lanes', meta['lane_count'], 'lanes')
         for lane in range(meta['lane_count']):
-            result = _infer_lane(observations, fusion, lane, clock, meta, config)
+            result = _infer_lane(observations, fusion, lane, clock, meta, config, progress=progress)
+            work.update(lane + 1)
             for e in result['events']:
                 counts[e['status']] += 1
             candidate_count += len(result['candidates']); endpoint_count += len(result['endpoints'])
@@ -775,6 +786,8 @@ def infer(observations: Cache, motion: Cache, fusion: Cache, config: DecodeConfi
             # Release this lane before constructing the next or validating the
             # published payload. No inference boundary is introduced within it.
             del result
+        if progress:
+            progress('decode: saving and validating cache')
         return writer.commit({'observation_cache_id': observations.id, 'motion_cache_id': motion.id,
                               'fusion_cache_id': fusion.id, 'lane_count': meta['lane_count'],
                               'event_status_counts': counts, 'candidate_count': candidate_count,

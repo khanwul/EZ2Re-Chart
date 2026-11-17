@@ -119,9 +119,9 @@ class IntervalDPTest(unittest.TestCase):
                         break
                 return result
 
-            def infer_lane(*args):
+            def infer_lane(*args, **kwargs):
                 self.assertTrue(all(ref() is None for ref in refs))
-                return watch(original_infer(*args))
+                return watch(original_infer(*args, **kwargs))
 
             def payload(chunk):
                 self.assertTrue(all(ref() is None for ref in refs))

@@ -187,7 +187,8 @@ def _forecast_rate(history, fallback):
     return float(np.median(rates)) if rates else fallback
 
 
-def estimate(observations: Cache, config: MotionConfig, root: Path):
+def estimate(observations: Cache, config: MotionConfig, root: Path, *, progress=None):
+    from .progress import WorkProgress
     key = cache_key(observations, config)
     try:
         return open_motion(root / "motion" / digest(key), key), True
@@ -204,6 +205,7 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
     forecast_rate = None
     previous = None
     repeat_edges = []
+    work = WorkProgress(progress, "motion / frames", observations.manifest["metadata"].get("frame_count"), "frames")
     for frame in frames(observations):
         points = landmarks(frame, profile, config)
         fid, ms = frame["id"], frame["ms"]
@@ -297,6 +299,9 @@ def estimate(observations: Cache, config: MotionConfig, root: Path):
         if row['status'] == STATUS['observed']:
             forecast_rate = _forecast_rate(history, velocity)
         previous = frame
+        work.update(len(rows))
+    if progress:
+        progress("motion: finalizing and validating cache")
     if not rows:
         raise ValueError("motion requires observations")
     # Confirm zero displacement only in a group connected to moving multi-lane

@@ -89,7 +89,8 @@ def frame_contributions(deposits):
     return np.concatenate((endpoints, merged))
 
 
-def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: Path):
+def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: Path, *, progress=None):
+    from .progress import WorkProgress
     if motion.manifest["key"]["parents"] != [observations.id]:
         raise ValueError("fusion motion/observation lineage mismatch")
     key = cache_key(observations, motion, config)
@@ -168,6 +169,7 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
                           endpoint_error_px=rows[:, 9:12], endpoint_group=rows[:, 12].astype(np.int64))
             ledger.clear()
 
+        work = WorkProgress(progress, "fusion / frames", len(clock["frame_id"]), "frames")
         for i, frame in enumerate(frames(observations)):
             if i >= len(clock["frame_id"]) or frame["id"] != clock["frame_id"][i] or frame["ms"] != clock["timestamp_ms"][i]:
                 raise ValueError("fusion frame timeline differs from motion")
@@ -225,6 +227,9 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
             before = int(np.floor(minimum / config.grid_px)) - 1
             if (i + 1) % 120 == 0 or any((t + 1) * config.tile_bins <= before for t in tiles):
                 flush(before)
+            work.update(i + 1)
+        if progress:
+            progress("fusion: finalizing and validating cache")
         if i + 1 != len(clock["frame_id"]):
             raise ValueError("fusion motion frame count differs")
         add_group()

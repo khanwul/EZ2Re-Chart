@@ -155,13 +155,13 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             write_json(root / "run.json", run)
             stage_started = time.monotonic()
             if active == "motion":
-                cache, reused = estimate(observations, algorithm.motion, cache_root or output_root / ".cache")
+                cache, reused = estimate(observations, algorithm.motion, cache_root or output_root / ".cache", progress=progress)
                 motion = cache
             elif active == "fusion":
-                cache, reused = accumulate(observations, motion, algorithm.fusion, cache_root or output_root / ".cache")
+                cache, reused = accumulate(observations, motion, algorithm.fusion, cache_root or output_root / ".cache", progress=progress)
                 fusion = cache
             else:
-                cache, reused = infer(observations, motion, fusion, algorithm.decode, cache_root or output_root / ".cache")
+                cache, reused = infer(observations, motion, fusion, algorithm.decode, cache_root or output_root / ".cache", progress=progress)
                 decoded = cache
             run["cost"][f"{active}_seconds"] = time.monotonic() - stage_started
             run["stages"][active] = {"status": "complete", "cache_id": cache.id, "reused": reused,
@@ -178,6 +178,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             scope_ref = 'artifacts/analysis-scope.json'
             write_json(root / scope_ref, scope)
             run['analysis_scope_ref'] = scope_ref
+        report("timing: projecting video times")
         projection = project_video_times(observations, motion, decoded)
         if scope_ref is not None:
             projection.update(analysis_scope_ref=scope_ref, observation_scope='includes_auxiliary')
@@ -190,10 +191,12 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                motion_sha256=file_hash(root / 'artifacts/motion/manifest.json'))
         write_json(root / endpoint_ranges_ref, endpoint_ranges)
         reference_ref = "artifacts/reference-candidates.json"
+        report("timing: finding reference candidates")
         references = reference_candidates(
             observations, motion, song.bpm, beat_zero_ms=song.beat_zero_ms, measure_beats=song.measure_beats)
         write_json(root / reference_ref, references)
         barline_ref = 'artifacts/barline-grid.json'
+        report("timing: inferring barline grid")
         barlines = infer_barline_grid(observations, motion, song.bpm, song.measure_beats)
         write_json(root / barline_ref, barlines)
         reference_link_ref = 'artifacts/reference-origin-link.json'
@@ -281,6 +284,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                           endpoint_time_ranges_sha256=file_hash(root / endpoint_ranges_ref),
                           time_projection_ref=projection_ref, time_projection_sha256=file_hash(root / projection_ref))
         write_json(root / ranges_ref, ranges)
+        report("timing: resolving spatial chart")
         chart,events,spatial_resolution=resolve_spatial_chart(chart,events,relative,rhythm,barlines,profile_data,
             physical_review=physical_review, calibration_verification=calibration_verification,
             analysis_scope=scope)
@@ -332,6 +336,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         report("export: saving chart and review")
         run["stages"][active]["status"] = "running"
         write_json(root / "run.json", run)
+        report("export: projecting editable draft")
         draft_projection = project_draft(observations, motion, decoded, barlines,
             allowed_candidates={c['id'] for p in pixel_intervals
                                 for c in (*p['selected_intervals'], *p['alternatives'])},
@@ -343,11 +348,14 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                              'observation_cache_id': observations.id, 'motion_cache_id': motion.id,
                              'decode_cache_id': decoded.id,
                              'analysis_window': song_window(song)})
+        report("export: saving draft")
         save_draft(root / 'draft.json', draft)
+        report("export: writing review")
         write_review(root / 'review.html', draft)
         run['draft'] = {'path': 'draft.json', 'notes': len(draft['notes']),
                         'unresolved': sum(n['status'] == 'unresolved' for n in draft['notes']),
                         'document_sha256': draft['document_sha256']}
+        report("export: writing chart artifacts")
         write_outputs(root, chart, events, observation_ref="artifacts/observations/manifest.json",
                       motion_ref="artifacts/motion/manifest.json", fusion_ref="artifacts/fusion/manifest.json",
                       decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,
