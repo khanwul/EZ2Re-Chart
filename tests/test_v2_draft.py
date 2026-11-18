@@ -77,10 +77,23 @@ class DraftTest(unittest.TestCase):
             self.assertEqual(stamp.frame_id, witness['frame_id'])
             export_frame(draft, root/'raw.png', seconds=witness['timestamp_ms']/1000)
             raw, marked = (cv2.imread(str(root/name)) for name in ('raw.png', 'marked.png'))
-            source_y = round(witness['y_px'] + 5)
-            np.testing.assert_array_equal(marked[source_y], np.tile([0, 0, 255], (raw.shape[1], 1)))
-            marked[source_y] = raw[source_y]
-            np.testing.assert_array_equal(marked, raw)
+            x, y, width, height = witness['box_px']
+            self.assertEqual((height, width), cv2.imread(str(root/'note.png')).shape[:2])
+            expected = raw.copy()
+            from ez2rc.v2.witness_box import draw_outline
+            draw_outline(expected, (x+3, y+5), (x+3+width-1, y+5+height-1), 'tap')
+            np.testing.assert_array_equal(marked, expected)
+            legacy_boxes = deepcopy(draft)
+            for group in [legacy_boxes['automatic']['notes'], legacy_boxes['notes']]:
+                for n in group:
+                    for side in ('start', 'end'):
+                        for w in (n['evidence'].get(side) or {}).get('witnesses', []):
+                            w.pop('box_px', None)
+            # Use the immutable old observation ID plus note kind to recover its footprint.
+            from ez2rc.v2.witness_box import matched_boxes
+            old = legacy_boxes['automatic']['notes'][0]['evidence']['start']['witnesses'][0]
+            boxes = matched_boxes([(old,'tap')], legacy_boxes, run)
+            self.assertEqual(boxes[old['observation_id'],'tap'], witness['box_px'])
             # Older drafts cannot safely assume a missing alignment is zero.
             legacy = deepcopy(draft)
             del legacy['source']['alignment_offset_px']

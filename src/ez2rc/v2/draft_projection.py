@@ -80,6 +80,8 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                     endpoint_data[eid]['witnesses'].append({
                         'frame_id': frame, 'timestamp_ms': times[frame],
                         'y_px': float(chunk['positions'][i, kind, 1]),
+                        **({'box_px': [int(chunk['positions'][i, kind, 0]), int(chunk['positions'][i, kind, 1]),
+                                       *reversed(shapes[lane][KINDS[kind]])]} if shapes is not None else {}),
                         'observation_id': f'f{frame}:l{lane}:y{seed}',
                         'usable': not bool(int(chunk['flags'][i, kind]) & 3)})
     for data in endpoint_data.values():

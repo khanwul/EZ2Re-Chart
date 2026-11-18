@@ -79,12 +79,12 @@ def write_review(path, draft):
     Path(path).write_text(html, encoding='utf-8')
 
 
-def export_frame(draft, output, *, identity=None, side='start', seconds=None, video=None):
+def export_frame(draft, output, *, identity=None, side='start', seconds=None, video=None, analysis_dir=None):
     validate_draft(draft)
     source = Path(video or draft['source']['video'])
     if file_hash(source) != draft['source']['video_sha256']:
         raise ValueError('video content does not match this draft')
-    frame_id, y = None, None
+    frame_id, corners = None, None
     if identity is not None:
         row = next((n for n in draft['notes'] + draft['automatic']['alternatives'] if n['id'] == identity), None)
         if row is None:
@@ -96,18 +96,29 @@ def export_frame(draft, output, *, identity=None, side='start', seconds=None, vi
         offset = draft['source'].get('alignment_offset_px')
         if offset is None:
             raise ValueError('draft has no source alignment; regenerate it or use --time to inspect the video')
-        frame_id, y = witness['frame_id'], witness['y_px'] + offset[1]
+        from .witness_box import draw_outline, matched_boxes, witness_kind
+        original_type = next((n['type'] for group in ('notes', 'alternatives')
+                              for n in draft['automatic'][group] if n['id'] == identity), row['type'])
+        kind = witness_kind(original_type, side)
+        boxes = matched_boxes([(witness, kind)], draft, analysis_dir)
+        box = boxes.get((witness.get('observation_id'), kind))
+        if box is None:
+            raise ValueError('no matched note size available; use --time to view the original frame')
+        x, y, width, height = box
+        x, y = x + offset[0], y + offset[1]
+        corners = ((x, y), (x+width-1, y+height-1))
+        frame_id = witness['frame_id']
     elif seconds is None or seconds < 0:
         raise ValueError('supply a note ID or a nonnegative --time in seconds')
     output = Path(output)
     if output.exists():
         raise ValueError(f'preview output already exists: {output}')
     output.parent.mkdir(parents=True, exist_ok=True)
-    for frame in VideoReader(source):
+    for frame in VideoReader(source, timestamp_policy=draft['source'].get('timestamp_policy', 'strict')):
         if (frame_id is not None and frame.stamp.frame_id == frame_id
                 or frame_id is None and frame.stamp.timestamp_ms >= seconds*1000):
-            if y is not None:
-                cv2.line(frame.bgr, (0, round(y)), (frame.bgr.shape[1]-1, round(y)), (0, 0, 255), 1)
+            if corners is not None:
+                draw_outline(frame.bgr, *corners, kind)
             ok, encoded = cv2.imencode('.png', frame.bgr)
             if not ok:
                 raise ValueError('cannot encode preview PNG')

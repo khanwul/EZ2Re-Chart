@@ -81,7 +81,7 @@ def main(argv=None):
             if args.time is not None and not isfinite(args.time):
                 raise ValueError('--time must be finite')
             stamp = export_frame(read_draft(args.draft), args.output, identity=args.id, side=args.side,
-                                 seconds=args.time, video=args.video)
+                                 seconds=args.time, video=args.video, analysis_dir=args.draft.parent)
             print(f'Frame {stamp.frame_id} at {stamp.timestamp_ms/1000:.3f}s: {args.output}')
             return 0
         if args.command == 'open':
