@@ -27,6 +27,10 @@ For the default draft timing, crop tap and hold-head templates flush with the bo
 
 Follow the three commands in the [quick start](../README.md#quick-start). `init` creates a new project directory containing `song.toml`, the profile, and copies of the templates. The video stays at its original path. To label the result, add `--title "My Song" --difficulty HD` to `init`.
 
+The first identified barline marks beat zero. At the supplied fixed BPM, the draft measures the position of each following line from the recording. Four beats, then three, then four place the lines at beats 0, 4, 7 and 11. This also works with older projects that set `measure_beats = [4, 1]`. No meter setting is required for the video draft.
+
+The automatic draft resolves barline positions to sixteenth-note increments (one quarter of a quarter-note beat). The video establishes the length in beats. Distinct signatures such as 3/4 and 6/8 can have the same length. A long interval can also cover a missed barline. Check the indicated beat range if the extractor flags a possible gap.
+
 `extract` prints the result directory. Keep its hidden `.ez2rc/` folder when moving the draft. To hide per-stage progress on stderr, use `--no-progress`.
 
 ## Review the draft

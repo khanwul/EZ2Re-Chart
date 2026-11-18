@@ -37,6 +37,7 @@ class SetupTest(unittest.TestCase):
             settings = load_song(song)
             profile = load_profile(settings.profile)
             self.assertEqual(settings.difficulty, 'SHD')
+            self.assertIsNone(settings.measure_beats)
             self.assertEqual(profile.resolution, (1920, 1080))
             self.assertEqual(len(profile.asset_hashes), 15)
             for p in assets.glob('*.png'):

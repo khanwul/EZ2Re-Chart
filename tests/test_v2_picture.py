@@ -3,6 +3,7 @@ from contextlib import redirect_stdout
 from copy import deepcopy
 import io
 import json
+from fractions import Fraction
 from pathlib import Path
 import tempfile
 import unittest
@@ -217,7 +218,9 @@ class PictureTest(unittest.TestCase):
     def test_compact_extract_and_reconstruct(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            song = marked_video(root, longnotes=True)
+            song = marked_video(root, bar_entries=(6, 26, 41, 61, 81, 101))
+            song.write_text(song.read_text().replace('bpm = "150"', 'bpm = "600"')
+                            .replace('measure_beats = [1, 1]', 'measure_beats = [4, 1]'))
             for command in ('extract', 'reconstruct'):
                 out = root / command
                 args = [command, str(song), '--output', str(out), '--no-progress']
@@ -232,6 +235,18 @@ class PictureTest(unittest.TestCase):
                 self.assertEqual(run['stages']['timing']['status'], 'complete')
                 self.assertEqual(run['stages']['timing']['confirmed_chart_status'], 'partial')
                 self.assertEqual(run['picture']['pending_choices'], 0)
+                grid = json.loads((result/'.ez2rc/artifacts/barline-grid.json').read_text())
+                assignments = grid['hypotheses'][0]['assignments']
+                expected = [[b, 1] for b in (0, 4, 7, 11, 15, 19)]
+                self.assertEqual([a['beat'] for a in assignments], expected)
+                draft = read_draft(result/'.ez2rc/draft.json')
+                self.assertEqual(draft['projection']['barline_beats'], expected)
+                # The last tap in lane 2 coincides with the sixth observed line.
+                last = max((n for n in draft['notes'] if n['lane'] == 1),
+                           key=lambda n: Fraction(*n['start_beat']))
+                bounds = last['evidence']['start']['beat_range']
+                self.assertLessEqual(Fraction(*bounds['lower']), 19)
+                self.assertGreaterEqual(Fraction(*bounds['upper']), 19)
                 names = {p.name for p in result.iterdir()}
                 from ez2rc.v2.photos import photo_folder
                 folder = photo_folder(read_draft(result/'.ez2rc/draft.json'))
@@ -247,6 +262,10 @@ class PictureTest(unittest.TestCase):
                 self.assertNotEqual(photos[0].read_bytes(), photos[1].read_bytes())
                 self.assertIsNotNone(cv2.imread(str(result / IMAGE_NAME)))
                 self.assertFalse((result / '.ez2rc/report.html').exists())
+            song.write_text(song.read_text().replace('measure_beats = [4, 1]', ''))
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(main(args), 0, output.getvalue())
+            self.assertIn('Draft complete:', output.getvalue())
 
     def test_missing_barline_origin_leaves_partial_draft(self):
         with tempfile.TemporaryDirectory() as tmp:

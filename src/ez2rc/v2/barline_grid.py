@@ -1,4 +1,4 @@
-"""First-visible-barline numbering from stored row signals and fixed meter.
+"""First-visible-barline numbering from stored row signals at a fixed tempo.
 
 Capture phase helps count cycles; it never supplies exact note beats or the
 timestamp of beat zero. Moving-line identity and missing observations remain
@@ -14,6 +14,7 @@ from .motion import STATUS, timeline
 from .reference import phase_candidates
 
 VERSION = 'first-barline-grid-3'
+OBSERVED_METER_VERSION = 'observed-barline-beats-1'
 
 
 def reconcile_cycles(hypotheses, marker_ids, measure):
@@ -134,21 +135,88 @@ def _unbranched_rows(track):
     return [row for row in track['observations'] if not row.get('association_conflict')]
 
 
-def infer_barline_grid(observations, movement, bpm, measure_beats):
+def _crossing_band(rows, center):
+    """Interpolate the two edges of the observed line across the reference row."""
+    times = []
+    for edge in (0, 1):
+        crossings = []
+        for a, b in zip(rows, rows[1:]):
+            y0, y1 = a['visible_range_px'][edge], b['visible_range_px'][edge]
+            if b['frame_id'] == a['frame_id']+1 and y0 <= center < y1:
+                fraction = (center - y0) / (y1 - y0)
+                crossings.append(float(a['timestamp_ms'] + fraction * (b['timestamp_ms'] - a['timestamp_ms'])))
+        if len(crossings) != 1:
+            return None
+        times.extend(crossings)
+    return sorted(times)
+
+
+def observed_barline_beats(markers, beat_ms):
+    """Place each crossing relative to the first, without accumulating rounding errors."""
+    markers = sorted(markers, key=lambda m: m['timestamp_interval_ms'])
+    if len(markers) < 2:
+        return [], [], [], ['insufficient_recurring_barlines']
+    first = markers[0]
+    beats = [Fraction(0)]
+    placed = [first]
+    last_index = 0
+    unplaced = []
+    gaps = []
+    for index, marker in enumerate(markers[1:], 1):
+        beat = None
+        for field in ('timestamp_interval_ms', 'crossing_band_ms'):
+            if not first.get(field) or not marker.get(field):
+                continue
+            a, b = map(exact_ms, marker[field])
+            start, stop = map(exact_ms, first[field])
+            low = math.ceil(4 * (a - stop) / beat_ms)
+            high = math.floor(4 * (b - start) / beat_ms)
+            if low == high and Fraction(low, 4) > beats[-1]:
+                beat = Fraction(low, 4)
+                break
+        if beat is None:
+            unplaced.append(marker['id'])
+            continue
+        if index > last_index + 1:
+            gaps.append([ratio(beats[-1]), ratio(beat)])
+        last_index = index
+        beats.append(beat)
+        placed.append(marker)
+    if len(placed) < 2:
+        return [], [], unplaced, ['barline_beat_spacing_ambiguous']
+    lengths = [b-a for a,b in zip(beats, beats[1:])]
+    for i, length in enumerate(lengths):
+        neighbors = lengths[max(0, i-1):i] + lengths[i+1:i+2]
+        if neighbors and all(length >= 2*n and length % n == 0 for n in neighbors):
+            span = [ratio(beats[i]), ratio(beats[i+1])]
+            if span not in gaps:
+                gaps.append(span)
+    first_gap = min((read_ratio(a) for a, _ in gaps), default=None)
+    rows = [{'marker_id': m['id'], 'beat': ratio(b),
+             'measure_index': i if first_gap is None or b <= first_gap else None}
+            for i, (m, b) in enumerate(zip(placed, beats))]
+    return [{'first_marker_id': first['id'], 'assignments': rows, 'missing_measure_indices': [],
+             'duplicate_cycle': False, 'conflicting_marker_ids': [],
+             'numbering_basis': 'observed_crossings'}], gaps, unplaced, []
+
+
+def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_meter=False):
     result = {'format':'ez2rc.barline-grid','schema_version':1,'algorithm_version':VERSION,
               'observation_cache_id':observations.id,'motion_cache_id':movement.id,
               'bpm':bpm,'measure_beats':ratio(measure_beats) if measure_beats else None,
               'coordinate':'first_barline_zero','status':'unavailable','accepted':False,
               'tracks':[],'hypotheses':[],'reasons':[]}
     period = 60000/decimal_bpm(bpm)
-    if measure_beats is None:
+    if observed_meter:
+        result.update(algorithm_version=OBSERVED_METER_VERSION, measure_beats=None, barline_beats=[],
+                      uncertain_measure_spans=[])
+    elif measure_beats is None:
         result['reasons'] = ['measure_length_not_supplied']
         return result
-    if not isinstance(measure_beats,Fraction) or measure_beats <= 0:
+    elif not isinstance(measure_beats,Fraction) or measure_beats <= 0:
         raise ValueError('invalid measure length')
     if movement.manifest['key']['parents'] != [observations.id]:
         raise ValueError('barline inference parent lineage mismatch')
-    period *= measure_beats
     profile = observations.manifest['metadata']['profile']
     parameters = observations.manifest['key']['parameters']['algorithm']
     motion_parameters = movement.manifest['key']['parameters']
@@ -216,7 +284,18 @@ def infer_barline_grid(observations, movement, bpm, measure_beats):
         if not track['reasons']:
             a,b = crossing[0]
             markers.append({'id':track['id'],'timestamp_interval_ms':[a['timestamp_ms'],b['timestamp_ms']]})
-    phase,hypotheses = number_barlines(markers,period,measure_beats)
+            if observed_meter:
+                markers[-1]['crossing_band_ms'] = _crossing_band(rows, center)
+    if observed_meter:
+        hypotheses, gaps, unplaced, reasons = observed_barline_beats(markers, period)
+        phase = None
+        result['uncertain_measure_spans'] = gaps
+        result['unplaced_marker_ids'] = unplaced
+        if hypotheses:
+            result['barline_beats'] = [r['beat'] for r in hypotheses[0]['assignments']]
+    else:
+        phase,hypotheses = number_barlines(markers,period * measure_beats,measure_beats)
+        reasons = [] if hypotheses else ['insufficient_recurring_barlines']
     tracks = {t['id']:t for t in result['tracks']}
     contiguous = bool(all_ids) and all_ids == list(range(all_ids[0],all_ids[-1]+1))
     for hypothesis in hypotheses:
@@ -232,8 +311,10 @@ def infer_barline_grid(observations, movement, bpm, measure_beats):
     result.update(phase=phase,hypotheses=hypotheses,crossing_markers=markers,screen_reference_y=center,
                   first_detection_frame_id=first_detection,
                   status='supported' if len(hypotheses)==1 and not hypotheses[0]['reasons'] else 'ambiguous' if hypotheses else 'unavailable',
-                  reasons=[] if hypotheses else ['insufficient_recurring_barlines'],
+                  reasons=reasons,
                   semantics='Narrow common-row tracks and fixed-period cycle hypotheses. First-line numbering is relative to the first supported entering line. Phase is a cycle-count witness at a screen row, not a judgment timestamp. Detector completeness and physical calibration are not certified by recurrence.')
+    if observed_meter:
+        result['semantics'] = 'Observed line crossings relative to the first, in quarter-note beats at the supplied BPM. A possible missing line leaves subsequent measure numbers unknown.'
     return result
 
 
@@ -252,13 +333,15 @@ def spatial_reference(result, calibration):
         anchors.append({'id':identity,'beat':assignment['beat'],'q_px':q,'q_range_px':[q,q]})
         support[identity] = [{'frame_id':r['frame_id'],'y_px':r['y_px']} for r in rows]
     reference = {'format':'ez2rc.spatial-beat-reference','schema_version':1,
-                 'version':VERSION,'origin':'first_barline_zero','measure_beats':result['measure_beats'],
+                 'version':result['algorithm_version'],'origin':'first_barline_zero','measure_beats':result['measure_beats'],
                  'extrapolation':'conditional_linear', 'anchors':anchors,
                  'observation_cache_id':calibration['observation_cache_id'],
                  'motion_cache_id':calibration['motion_cache_id'],'decode_cache_id':calibration['decode_cache_id'],
                  'endpoint_calibrations':calibration['endpoint_calibrations'],
                  'observed_geometry':{'version':GEOMETRY_VERSION,'localization_error_px':calibration['localization_error_px'],
                      'scale':'constant','endpoint_position_relation':'same_raw_localization','anchor_observations':support}}
+    if 'barline_beats' in result:
+        reference['barline_beats'] = result['barline_beats']
     if any(reference[k] != result[k] for k in ('observation_cache_id','motion_cache_id')):
         raise ValueError('automatic calibration parent lineage mismatch')
     validate_reference(reference)

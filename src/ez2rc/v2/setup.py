@@ -56,7 +56,7 @@ def initialize(directory, *, video, bpm, templates, title='Untitled', difficulty
         quote = lambda value: json.dumps(str(value), ensure_ascii=False)
         song = (f'schema_version = 1\n[input]\nvideo = {quote(video)}\nprofile = "profile.toml"\n'
                 f'[metadata]\ntitle = {quote(title)}\ndifficulty = {quote(difficulty)}\n'
-                f'[timing]\nmode = "fixed"\nbpm = {quote(bpm)}\nmeasure_beats = [4, 1]\n')
+                f'[timing]\nmode = "fixed"\nbpm = {quote(bpm)}\n')
         (temporary / 'song.toml').write_text(song, encoding='utf-8')
         load_song(temporary / 'song.toml')
         temporary.rename(directory)

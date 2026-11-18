@@ -13,16 +13,22 @@ from .observation import template_shapes
 from .relative_beats import project_relative_beats
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-5'
+VERSION = 'screen-coordinate-draft-6'
 
 
 def draft_timing_issues(draft):
     projection = draft['projection']
     issues = []
-    if projection['origin_issues']:
+    if 'barline_beat_spacing_ambiguous' in projection['origin_issues']:
+        issues.append('The recording does not establish unique beat positions for the measure lines.')
+    elif projection['origin_issues']:
         issues.append('The first barline or measure numbering could not be established.')
     if projection['geometry_issues']:
         issues.append('Template geometry is unavailable for placing notes.')
+    for left, right in projection.get('uncertain_measure_spans', []):
+        issues.append(f'Check for missing measure lines between beats {read_ratio(left)} and {read_ratio(right)}.')
+    if projection.get('unplaced_marker_ids'):
+        issues.append(f"Measure lines without a unique beat position: {len(projection['unplaced_marker_ids'])}.")
     notes = draft['notes']
     if not notes:
         issues.append('No notes were detected in the requested interval.')
@@ -94,7 +100,8 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                         requests[(frame, lane_id, seed, KINDS.index(kind))].append(eid)
     reference = spatial_reference(barlines, calibration)
     relative = (project_relative_beats(observations, movement, decoded, reference,
-                                      measure_beats=read_ratio(reference['measure_beats']), draft_tap_anchors=True)
+                                      measure_beats=(read_ratio(reference['measure_beats'])
+                                                     if reference['measure_beats'] else None), draft_tap_anchors=True)
                 if reference is not None and shapes is not None else None)
     relative_rows = {r['candidate_id']: r for r in relative['candidates']} if relative else {}
     origin_issues = list(barlines['reasons'])
@@ -170,6 +177,9 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
             'default_start_reference': 'template_bottom',
             'measure_beats': reference['measure_beats'] if reference is not None else None,
+            **({'barline_beats': barlines['barline_beats'] if reference else [],
+                'unplaced_marker_ids': barlines['unplaced_marker_ids'],
+                'uncertain_measure_spans': barlines['uncertain_measure_spans']} if 'barline_beats' in barlines else {}),
             'coordinate': 'first_numbered_barline_zero', 'origin_issues': sorted(set(origin_issues)),
             'scale_px_per_beat': scale, 'scale_basis': 'shared_observation_geometry',
             'geometry_status': geometry.get('status', 'unavailable'),

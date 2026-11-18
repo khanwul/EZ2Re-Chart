@@ -90,7 +90,7 @@ def validate_reference(value):
     required = {'format', 'schema_version', 'version', 'origin', 'measure_beats',
                 'observation_cache_id', 'motion_cache_id', 'decode_cache_id',
                 'anchors', 'endpoint_calibrations', 'extrapolation'}
-    table(value, required | {'coordinate_uncertainty', 'motion_dependence', 'observed_geometry'}, required)
+    table(value, required | {'coordinate_uncertainty', 'motion_dependence', 'observed_geometry', 'barline_beats'}, required)
     if (value['format'] != 'ez2rc.spatial-beat-reference'
             or type(value['schema_version']) is not int or value['schema_version'] != 1):
         raise ValueError('unsupported spatial beat reference')
@@ -100,9 +100,18 @@ def validate_reference(value):
         raise ValueError('spatial beats require the first_barline_zero convention')
     if value['extrapolation'] not in ('withhold', 'conditional_linear'):
         raise ValueError('unsupported spatial extrapolation policy')
-    measure = read_ratio(value['measure_beats'])
-    if measure <= 0:
-        raise ValueError('measure length must be positive')
+    boundaries = None
+    if 'barline_beats' in value:
+        if not isinstance(value['barline_beats'], list):
+            raise ValueError('observed barline beats must be an array')
+        starts = [read_ratio(b) for b in value['barline_beats']]
+        if value['measure_beats'] is not None or len(starts) < 2 or starts[0] != 0 or starts != sorted(set(starts)):
+            raise ValueError('invalid observed barline beats')
+        boundaries = set(starts)
+    else:
+        measure = read_ratio(value['measure_beats'])
+        if measure <= 0:
+            raise ValueError('measure length must be positive')
     if not isinstance(value['anchors'], list):
         raise ValueError('anchors must be an array')
     seen = set()
@@ -113,7 +122,7 @@ def validate_reference(value):
             raise ValueError('duplicate barline anchor')
         seen.add(anchor['id'])
         beat = read_ratio(anchor['beat'])
-        if beat < 0 or (beat / measure).denominator != 1:
+        if beat < 0 or (beat not in boundaries if boundaries is not None else (beat / measure).denominator != 1):
             raise ValueError('barline beat must be a nonnegative measure boundary')
         q = exact_ms(number(anchor['q_px'], 'anchor coordinate'))
         lo, hi = bounds(anchor['q_range_px'])
@@ -387,7 +396,8 @@ coordinates into exact chart notes or accepted judgment times.
     validate_reference(reference)
     if physical_review is not None:
         physical_review.check_parents(observations, movement, decoded)
-    if read_ratio(reference['measure_beats']) != measure_beats:
+    reference_measure = None if 'barline_beats' in reference else read_ratio(reference['measure_beats'])
+    if reference_measure != measure_beats:
         raise ValueError('spatial reference and song measure lengths differ')
     if (movement.manifest['key']['parents'] != [observations.id]
             or decoded.manifest['key']['parents'][:2] != [observations.id, movement.id]
