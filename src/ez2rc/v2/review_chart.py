@@ -6,17 +6,14 @@ import math
 from .chart_layout import (COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL,
                            chart_columns, fit_hold_columns, number_rail_width)
 from .contracts import read_ratio
+from .measure_grid import MeasureGrid
 
 
 def chart_view(draft):
     notes = draft['notes']
-    measure = draft['projection'].get('measure_beats')
-    measure = read_ratio(measure) if measure is not None else None
-    if measure is not None and measure <= 0:
-        measure = None
-    span = measure * COLUMN_MEASURES if measure else Fraction(16)
+    grid = MeasureGrid(draft['projection'])
     lanes = draft['metadata']['lane_count']
-    height, top, scale = 600, 34, 540 / float(span)
+    height, top = 600, 34
     blocks = {}
     missing = []
     for index, note in enumerate(notes):
@@ -26,24 +23,27 @@ def chart_view(draft):
             missing.append(f'<li><a href="#note-{index}">{escape(note["id"])}</a> · Lane {note["lane"]+1} · Start beat needs review</li>')
             continue
         end = end if end is not None else start
-        first = math.floor(start / span)
-        last = math.ceil(end / span) - 1 if end > start else first
+        first = grid.column(start, COLUMN_MEASURES)
+        last = grid.column(end, COLUMN_MEASURES, end=True) if end > start else first
         if first < last:
-            start, end, first, last = fit_hold_columns(start, end, first, last, lambda block: block * span)
+            start, end, first, last = fit_hold_columns(start, end, first, last, lambda block: grid.boundary(block * COLUMN_MEASURES))
         # Bound rendering of malformed or exceptionally long manual notes.
         if last - first > 256:
             missing.append(f'<li><a href="#note-{index}">{escape(note["id"])}</a> · Hold exceeds the display range</li>')
             continue
         for block in range(first, last + 1):
             blocks.setdefault(block, []).append((index, note, start, end))
-    rail_width = number_rail_width(blocks, measure)
+    rail_width = number_rail_width(blocks, grid if grid.numbered else None)
     rail_left = 4
     lane_left = rail_left + rail_width
     lane_right = lane_left + lanes * 34
     width = lane_right + 4
     panels = []
     for block in chart_columns(blocks):
-        base = block * span
+        first_measure = block * COLUMN_MEASURES
+        base = grid.boundary(first_measure)
+        span = grid.boundary(first_measure + COLUMN_MEASURES) - base
+        scale = 540 / float(span)
 
         def y(beat):
             return top + float(base + span - beat) * scale
@@ -55,23 +55,25 @@ def chart_view(draft):
             pieces.append(f'<rect x="{x}" y="{top}" width="34" height="540" fill="rgb{LANE_FILLS[lane % 2]}"/>')
             pieces.append(f'<path d="M{x} {top}v540" stroke="#465167"/><text x="{x+17}" y="22" text-anchor="middle">{lane+1}</text>')
         ticks = [Fraction(i, 4) for i in range(math.ceil(base * 4), math.ceil((base + span) * 4))]
-        if measure:
-            ticks = sorted(set(ticks + [base + i*measure for i in range(COLUMN_MEASURES)]))
+        bars = {grid.boundary(i): i for i in range(first_measure, first_measure + COLUMN_MEASURES)
+                if grid.numbered and grid.visible(i)}
+        ticks = sorted(set(ticks).union(bars))
         boundary_beats = {base, base + span}
         for beat in ticks:
             position = y(beat)
-            bar = measure is not None and beat % measure == 0
+            bar = beat in bars
             whole = beat.denominator == 1
             color = '#c3cddb' if bar else '#394558' if whole else '#2c3748'
             pieces.append(f'<path d="M{lane_left} {position:g}h{lanes*34}" stroke="{color}"/>')
             if bar:
                 boundary_beats.add(beat)
                 pieces.append(f'<path d="M{rail_left} {position:g}h{rail_width}" stroke="#c3cddb"/>'
-                              f'<text x="{rail_left+rail_width/2:g}" y="{y(beat+measure/2):g}" dominant-baseline="middle" '
-                              f'text-anchor="middle">{beat//measure+1}</text>')
-            elif whole and measure is None:
+                              f'<text x="{rail_left+rail_width/2:g}" y="{y((beat+grid.boundary(bars[beat]+1))/2):g}" dominant-baseline="middle" '
+                              f'text-anchor="middle">{grid.label(bars[beat])}</text>')
+            elif whole and not grid.numbered:
                 pieces.append(f'<text x="{lane_left-3}" y="{position-2:g}" text-anchor="end">{beat.numerator}</text>')
-        pieces.append(f'<path d="M{rail_left} {top}H{lane_right}" stroke="#c3cddb"/>')
+        if grid.visible(first_measure + COLUMN_MEASURES):
+            pieces.append(f'<path d="M{rail_left} {top}H{lane_right}" stroke="#c3cddb"/>')
         for index, note, start, end in blocks.get(block, ()):
             x = lane_left + 4 + note['lane']*34
             head_y = y(max(start, base))
@@ -109,7 +111,7 @@ tr:target{background:#fff0bf;outline:2px solid #d88a00}tr{scroll-margin-top:2rem
 </style><section aria-label="Chart image"><h2>Chart preview</h2>
 <p>Read each column from bottom to top, then move right. Short bars mark taps and connected bars mark holds.
 Select a note to see its details below. Yellow notes with a question mark need review.</p>'''
-        + ('<p>Barlines follow the measure length in the draft. Measure 1 starts at beat zero.</p>' if measure else
+        + ('<p>Measure 1 starts at beat zero. Barlines follow the draft’s measure boundaries.</p>' if grid.numbered else
            '<p>The measure length is unknown, so the chart shows beat ticks.</p>')
         + '<p>The chart shows the selected draft notes. The table below includes alternative candidates. '
           'Draft positions are estimates. Empty regions may contain undetected notes.</p>'

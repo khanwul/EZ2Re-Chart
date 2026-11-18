@@ -2,8 +2,13 @@
 from fractions import Fraction
 import unittest
 
+import numpy as np
+
 from ez2rc.v2.barline_grid import observed_barline_beats
 from ez2rc.v2.draft_projection import draft_timing_issues
+from ez2rc.v2.overlay import BeatGrid
+from ez2rc.v2.picture import chart_strips
+from ez2rc.v2.review_chart import chart_view
 
 
 def crossings(beats):
@@ -31,3 +36,20 @@ class ObservedMeterTest(unittest.TestCase):
         self.assertEqual(unplaced, ['2'])
         self.assertEqual([a['beat'] for a in hypotheses[0]['assignments']], [[0, 1], [4, 1], [11, 1]])
         self.assertEqual(gaps, [[[4, 1], [11, 1]]])
+
+    def test_picture_html_and_overlay_draw_the_saved_boundaries(self):
+        projection = {'barline_beats': [[n, 1] for n in (0, 4, 7, 11, 15, 18)]}
+        note = {'id': 'a', 'lane': 0, 'type': 'longnote', 'start_beat': [14, 1],
+                'end_beat': [16, 1], 'status': 'draft', 'issues': []}
+        draft = {'projection': projection, 'metadata': {'lane_count': 2}, 'notes': [note], 'bpm': '120'}
+        _, png = chart_strips(draft, {})
+        bars = np.flatnonzero((png[:, 70] == (158, 168, 180)).all(axis=1))[::-1]
+        self.assertEqual(list(bars), [bars[0] - round((bars[0]-bars[-1])*b/15) for b in (0,4,7,11,15)])
+        html = chart_view(draft)
+        self.assertIn('0–15 beats', html)
+        self.assertIn('Chart starting at beat 15', html)
+        image = np.zeros((180,80,3), np.uint8)
+        grid = BeatGrid({'lanes': [{'roi': [0, 0, 30, 180]}]}, (0,0), 10, None, projection=projection)
+        grid.draw(image, 165)
+        solid = np.flatnonzero((image[:, 2] == (50, 205, 255)).all(axis=1))
+        self.assertEqual(list(solid), [15, 55, 95, 125, 165])

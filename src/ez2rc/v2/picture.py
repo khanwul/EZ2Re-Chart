@@ -17,6 +17,7 @@ from .chart_layout import (COLUMN_HEIGHT, COLUMN_MEASURES, KEY_COLORS, LANE_FILL
                            chart_columns, fit_hold_columns, number_rail_width)
 from .contracts import read_ratio
 from .draft import change_note
+from .measure_grid import MeasureGrid
 
 IMAGE_NAME = 'chart.png'
 
@@ -137,20 +138,18 @@ def _display_phase(draft):
 
 def chart_strips(draft, items):
     lanes = draft['metadata']['lane_count']
-    measure = draft['projection'].get('measure_beats')
-    measure = read_ratio(measure) if measure is not None else None
-    span = measure * COLUMN_MEASURES if measure is not None else Fraction(16)
-    if span <= 0:
-        raise ValueError('invalid measure length')
+    grid = MeasureGrid(draft['projection'])
     lane_width = 36
     grid_top, grid_height = 32, COLUMN_HEIGHT
     grid_bottom = grid_top + grid_height
     bottom_start = draft['projection'].get('default_start_reference') == 'template_bottom'
     phase = Fraction(0) if bottom_start else _display_phase(draft)
-    tolerance = min(span / grid_height, Fraction(1, 96))
 
     def displayed(beat):
         corrected = beat - phase
+        block = grid.column(corrected, COLUMN_MEASURES)
+        span = grid.boundary((block+1)*COLUMN_MEASURES) - grid.boundary(block*COLUMN_MEASURES)
+        tolerance = min(span / grid_height, Fraction(1, 96))
         # Include straight and triplet subdivisions. Only absorb residual
         # jitter if the correction is at most one displayed pixel.
         for division in (1, 2, 3, 4, 6, 8, 12, 16):
@@ -171,10 +170,10 @@ def chart_strips(draft, items):
             display_start = displayed(start)
             if end is None or display_start < end:
                 start = display_start
-        first = start // span if start is not None else math.ceil(end / span) - 1
-        last = math.ceil(end / span) - 1 if start is not None and end is not None else first
+        first = grid.column(start if start is not None else end, COLUMN_MEASURES, end=start is None)
+        last = grid.column(end, COLUMN_MEASURES, end=True) if start is not None and end is not None else first
         if first < last:
-            start, end, first, last = fit_hold_columns(start, end, first, last, lambda block: block * span)
+            start, end, first, last = fit_hold_columns(start, end, first, last, lambda block: grid.boundary(block * COLUMN_MEASURES))
         # Distant endpoints of a manually entered hold need no intervening empty panels.
         indices = range(first, last + 1) if last - first < 256 else (first, last)
         for block in indices:
@@ -189,7 +188,7 @@ def chart_strips(draft, items):
                 place(other, f'{number}{letter}', True, grid_choice=other['id'] == item.note['id'])
 
     ordered = list(chart_columns(blocks))
-    rail_width = number_rail_width(blocks, measure)
+    rail_width = number_rail_width(blocks, grid if grid.numbered else None)
     panel = rail_width + lanes * lane_width + 10
 
     # The score runs in one row. Place the review key to its right so that
@@ -218,7 +217,7 @@ def chart_strips(draft, items):
     header = blank(70)
     label(header, f'{draft["bpm"]} BPM   |   {len(draft["notes"])} notes   |   {len(items)} to check',
           14, 28, size=.7)
-    label(header, 'Read upwards, then move right.' if measure else
+    label(header, 'Read upwards, then move right.' if grid.numbered else
           'Read upwards, then move right.   Scale: beats', 14, 54)
     if phase:
         label(header, f'Auto-start display shift: {float(-phase):+.4f} beat', 370, 54)
@@ -228,7 +227,9 @@ def chart_strips(draft, items):
         height = grid_bottom + 24 if ordered else grid_top + min(len(legend), rows_per_column) * line_height
         strip = blank(height)
         for column, block in enumerate(ordered):
-            base = block * span
+            first_measure = block * COLUMN_MEASURES
+            base = grid.boundary(first_measure)
+            span = grid.boundary(first_measure + COLUMN_MEASURES) - base
             left = column * panel + 3 + rail_width
             right = left + lanes * lane_width
 
@@ -258,22 +259,24 @@ def chart_strips(draft, items):
                     rows = (y(Fraction(tick, division)) for tick in range(first, stop))
                 for row in rows:
                     cv2.line(strip, (left, row), (right-1, row), color)
-            major = measure or Fraction(4)
             rail = strip[:, left-rail_width:left]
             boundary_rows = {grid_top, grid_bottom}
             cv2.rectangle(rail, (0, grid_top), (rail_width-1, grid_bottom), MEASURE_RAIL, -1)
-            for index in range(COLUMN_MEASURES):
-                beat = base + index*major
+            for index in range(first_measure, first_measure + COLUMN_MEASURES):
+                if not grid.visible(index):
+                    continue
+                beat = grid.boundary(index)
                 position = y(beat)
                 boundary_rows.add(position)
-                caption = str(beat//major+1) if measure else str(beat)
-                label_y = (position + y(beat + major)) // 2 if measure else position - 9
+                caption = grid.label(index) if grid.numbered else str(beat)
+                label_y = (position + y(grid.boundary(index+1))) // 2 if grid.numbered else position - 9
                 (w, h), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)
                 label(rail, caption, (rail_width-w)//2, label_y+h//2, (245, 247, 250), .4)
                 cv2.line(rail, (0, position), (rail_width-1, position), (185, 191, 200))
                 cv2.line(strip, (left, position), (right-1, position), (158, 168, 180))
-            cv2.line(rail, (0, grid_top), (rail_width-1, grid_top), (185, 191, 200))
-            cv2.line(strip, (left, grid_top), (right-1, grid_top), (158, 168, 180))
+            if grid.visible(first_measure + COLUMN_MEASURES):
+                cv2.line(rail, (0, grid_top), (rail_width-1, grid_top), (185, 191, 200))
+                cv2.line(strip, (left, grid_top), (right-1, grid_top), (158, 168, 180))
 
             markers = defaultdict(list)
             for lane, start, end, tag, alternative in blocks[block]:

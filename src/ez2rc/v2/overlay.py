@@ -15,6 +15,7 @@ from .capture import TimestampClock
 from .contracts import read_ratio
 from .draft_projection import draft_endpoint_offset
 from .motion import STATUS, open_motion, timeline
+from .measure_grid import MeasureGrid
 from .observation import template_shapes
 from .progress import frame_progress
 from .storage import digest, file_hash, read_json
@@ -60,12 +61,13 @@ def frame_origins(clock, grid, scale):
 
 class BeatGrid:
     """Moving guides in the same beat-zero coordinate system as the draft."""
-    def __init__(self, profile, alignment, scale, measure):
+    def __init__(self, profile, alignment, scale, measure, *, projection=None):
         dx, self.dy = alignment
         self.lanes = [(left + dx, top + self.dy, right + dx, bottom + self.dy)
                       for left, top, right, bottom in (lane['roi'] for lane in profile['lanes'])]
         self.scale = scale
-        self.measure = float(read_ratio(measure)) if measure is not None else None
+        self.grid = MeasureGrid(projection if projection is not None else {'measure_beats': measure})
+        self.measure = float(self.grid.length) if self.grid.length is not None and not self.grid.starts else None
 
     def draw(self, image, origin):
         zero = origin + self.dy
@@ -84,6 +86,11 @@ class BeatGrid:
                 row = round(zero - index * spacing)
                 if top <= row < bottom:
                     lines[row] = (is_measure, f'M{index+1}' if is_measure else f'B{index}')
+
+        for index in self.grid.observed_between((zero-bottom)/self.scale, (zero-top+.5)/self.scale):
+            row = round(zero - float(self.grid.starts[index]) * self.scale)
+            if top <= row < bottom:
+                lines[row] = (True, 'M' + self.grid.label(index))
 
         for row, (is_measure, label) in lines.items():
             color = (50, 205, 255) if is_measure else (245, 205, 105)
@@ -295,7 +302,8 @@ def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None
     if not origins:
         raise ValueError('No frames link a numbered barline to a scroll position.')
     outlines = Outlines(draft, meta['profile'], shapes, meta['alignment_offset_px'], scale)
-    beat_grid = BeatGrid(meta['profile'], meta['alignment_offset_px'], scale, projection.get('measure_beats'))
+    beat_grid = BeatGrid(meta['profile'], meta['alignment_offset_px'], scale, projection.get('measure_beats'),
+                         projection=projection)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=destination.parent) as directory:
         temp = Path(directory)/'overlay.mp4'
