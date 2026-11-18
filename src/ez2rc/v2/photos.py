@@ -1,8 +1,6 @@
 """Render numbered review photos from the original recording in one decoding pass."""
 from collections import defaultdict
-from functools import lru_cache
 from pathlib import Path
-import os
 from tempfile import TemporaryDirectory
 
 import cv2
@@ -14,69 +12,43 @@ from .witness_box import OUTLINE_DARK, OUTLINE_PINK, draw_outline, matched_boxes
 
 
 def photo_folder(draft):
-    name = "검토사진" if pending_items(draft) else "참고사진"
+    name = "review-photos" if pending_items(draft) else "preview-photos"
     return f"{name}-r{draft['revision']:04d}"
 
 
-@lru_cache(maxsize=1)
-def _korean_font():
-    paths = [
-        Path('/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc'),
-        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
-        Path('/usr/share/fonts/truetype/nanum/NanumGothic.ttf'),
-        Path('/System/Library/Fonts/AppleSDGothicNeo.ttc'),
-        Path(os.environ.get('WINDIR', 'C:/Windows'))/'Fonts/malgun.ttf',
-    ]
-    for path in paths:
-        if path.is_file():
-            try:
-                return cv2.FontFace(str(path))
-            except cv2.error:
-                continue
-    return None
-
-
-def review_question(options, ko=True):
+def review_question(options):
     notes = list(options.values())
     lane = notes[0]['lane'] + 1
-    def say(korean, english):
-        return korean if ko else english
     if any(note['type'] != notes[0]['type'] for note in notes):
-        return say(f'{lane}번 레인에 보이는 것은 일반 노트인가요, 롱노트인가요?',
-                   f'Lane {lane}: is this a tap or a hold?')
+        return f'Lane {lane}: is this a tap or a hold?'
     sides = ('start', 'end') if notes[0]['type'] == 'longnote' else ('start',)
     uncertain = [side for side in sides if notes[0][side+'_beat'] is None or
                  any(note[side+'_beat'] != notes[0][side+'_beat'] for note in notes)]
     if uncertain == ['end']:
-        return say(f'{lane}번 레인의 롱노트는 몇 박에서 끝나나요?', f'Lane {lane}: on which beat does the hold end?')
+        return f'Lane {lane}: on which beat does the hold end?'
     if uncertain == ['start']:
-        return say(f'{lane}번 레인의 노트는 몇 박에서 시작하나요?', f'Lane {lane}: on which beat does the note start?')
+        return f'Lane {lane}: on which beat does the note start?'
     if uncertain:
-        return say(f'{lane}번 레인의 롱노트는 몇 박에서 시작하고 끝나나요?',
-                   f'Lane {lane}: on which beats does the hold start and end?')
-    return say(f'{lane}번 레인에 아래와 같은 노트가 보이나요?', f'Does lane {lane} contain the note shown below?')
+        return f'Lane {lane}: on which beats does the hold start and end?'
+    return f'Does lane {lane} contain the note shown below?'
 
 
-def _answers(options, number, ko):
+def _answers(options, number):
     lines = []
     for letter, note in options.items():
         parts = []
         flags = []
         for side in ('start', 'end') if note['type'] == 'longnote' else ('start',):
             value = note[side+'_beat']
-            name = {'start':'시작', 'end':'끝'}[side] if ko else side
-            position = beat_text(value)
             if value is None:
-                flags.append(f'--{side} ' + ('<박자>' if ko else '<beat>'))
-                position = '직접 입력' if ko else 'enter beat'
-            elif ko:
-                position += '박'
-            parts.append(f'{name} {position}')
-        kind = {'tap':'일반 노트','longnote':'롱노트'}[note['type']] if ko else note['type']
+                flags.append(f'--{side} <beat>')
+                parts.append(f'{side}: enter beat')
+            else:
+                parts.append(f'{side} beat {beat_text(value)}')
+        kind = 'tap' if note['type'] == 'tap' else 'hold'
         command = ' '.join(['ez2rc', 'choose', str(number), letter, *flags])
         lines.append(f'{letter}   {kind}   {" / ".join(parts)}     {command}')
-    remove = '노트가 아니라면 채보에서 삭제' if ko else 'No note here: remove it'
-    lines.append(f'X   {remove}     ez2rc choose {number} X')
+    lines.append(f'X   Remove the note     ez2rc choose {number} X')
     return lines
 
 
@@ -137,7 +109,7 @@ def _photo(frame, number, marks, options, rois, offset, boxes):
         bottom = min(height, max(ys + [y+dy+h for x,y,w,h in known])+111)
         top = max(0, min(ys)-110)
         if left >= right or top >= bottom:
-            raise ValueError('원본 영상의 표시 위치가 화면 밖입니다.')
+            raise ValueError('The marked region is outside the source video frame.')
         shot = image[top:bottom, left:right].copy()
         for (letter, _, _, _, kind), box in zip(marks, footprints):
             if box is None:
@@ -155,47 +127,27 @@ def _photo(frame, number, marks, options, rois, offset, boxes):
         origin = (max(0, round(x*scale)-10), max(15, round(y*scale)-6))
         cv2.putText(shot,text,origin,cv2.FONT_HERSHEY_SIMPLEX,.45,OUTLINE_DARK,3,cv2.LINE_AA)
         cv2.putText(shot,text,origin,cv2.FONT_HERSHEY_SIMPLEX,.45,OUTLINE_PINK,1,cv2.LINE_AA)
-    font = _korean_font()
-    ko = font is not None
     check = 'A' in options
-    if check:
-        heading = (f'확인 {number}번   ' if ko else f'Check {number}: ') + review_question(options, ko)
-    else:
-        heading = '대표 장면 · 선택할 항목이 없습니다' if ko else 'Preview only - no decision needed'
-    labels = []
-    for letter, side, lane, _, _ in marks:
-        if ko:
-            endpoint = '시작' if side == 'start' else '끝'
-            labels.append(f'{letter} {lane+1}번 레인 {endpoint}'.strip())
-        else:
-            labels.append(f'{letter} lane {lane+1} {side}'.strip())
+    heading = f'Check {number}: {review_question(options)}' if check else 'Preview only - no decision needed'
+    labels = [f'{letter} lane {lane+1} {side}'.strip() for letter, side, lane, _, _ in marks]
     seconds = frame.stamp.timestamp_ms / 1000
     lines = [heading, f'{seconds:.3f}s   ' + ' / '.join(dict.fromkeys(labels))]
     if not marked_count:
-        lines.append('위치나 크기 정보가 없어 테두리 없이 표시합니다.' if ko else 'Original frame without position markers')
+        lines.append('Original frame without position markers')
     else:
-        lines.append('분홍색 테두리가 감지된 노트의 경계입니다.' if ko else
-                     'The pink outline shows the detected note footprint.')
-    footer = _answers(options, number, ko) if check else []
+        lines.append('The pink outline shows the detected note footprint.')
+    footer = _answers(options, number) if check else []
     if check:
-        footer.append('판단하기 어려우면 입력하지 않고 다음 사진을 보세요.' if ko else
-                      'Unsure? Leave this item open and check another photo.')
+        footer.append('Unsure? Leave this item open and check another photo.')
     row_height = 32
     width = max(680, shot.shape[1] + 24)
     for line in lines + footer:
-        if ko:
-            x, _, w, _ = cv2.getTextSize((0,0), line, (0,0), font, 20)
-            width = max(width, x+w+36)
-        else:
-            width = max(width, cv2.getTextSize(line,cv2.FONT_HERSHEY_SIMPLEX,.58,1)[0][0]+36)
+        width = max(width, cv2.getTextSize(line,cv2.FONT_HERSHEY_SIMPLEX,.58,1)[0][0]+36)
     top_margin = row_height * len(lines) + 10
     out = cv2.copyMakeBorder(shot, top_margin, row_height*len(footer)+10, 12,
                              width-shot.shape[1]-12, cv2.BORDER_CONSTANT, value=(32,32,32))
     def caption(line, y, color):
-        if ko:
-            cv2.putText(out, line, (12,y), color, font, 20)
-        else:
-            cv2.putText(out,line,(12,y),cv2.FONT_HERSHEY_SIMPLEX,.58,color,1,cv2.LINE_AA)
+        cv2.putText(out,line,(12,y),cv2.FONT_HERSHEY_SIMPLEX,.58,color,1,cv2.LINE_AA)
     for i, line in enumerate(lines):
         caption(line, 26+i*row_height, (130,225,255) if i == 0 else (240,240,240))
     for i, line in enumerate(footer):
@@ -209,11 +161,11 @@ def write_photos(destination, draft, *, video=None, analysis_dir=None, progress=
         return 0, missing
     destination = Path(destination)
     if destination.exists():
-        raise ValueError(f'사진 폴더가 이미 있습니다: {destination}. 다른 --output 폴더를 지정하세요.')
+        raise ValueError(f'Photo directory already exists: {destination}. Choose another directory with --output.')
     source = draft['source']
     path = Path(video or source.get('video', ''))
     if not path.is_file() or file_hash(path) != source.get('video_sha256'):
-        raise ValueError('초안과 같은 원본 영상을 --video로 지정하세요.')
+        raise ValueError('Use --video to specify the original recording that matches the draft.')
     rois = source.get('lane_rois')
     policy = source.get('timestamp_policy', 'strict')
     if analysis_dir and rois is None:
@@ -222,12 +174,12 @@ def write_photos(destination, draft, *, video=None, analysis_dir=None, progress=
             manifest = read_json(manifest_path, 'ez2rc.stage-cache')
             checksum = digest({k:v for k,v in manifest.items() if k != 'manifest_sha256'})
             if manifest['manifest_sha256'] != checksum or manifest['cache_id'] != source.get('observation_cache_id'):
-                raise ValueError('초안과 관측 자료가 일치하지 않습니다.')
+                raise ValueError('The observation data does not match the draft.')
             meta = manifest['metadata']
             rois = [lane['roi'] for lane in meta['profile']['lanes']]
             policy = meta['capture']['timestamp_policy']
     if rois is not None and len(rois) != draft['metadata']['lane_count']:
-        raise ValueError('초안과 레인 정보가 일치하지 않습니다.')
+        raise ValueError('The lane geometry does not match the draft.')
     witnesses = ((w, kind) for rows in requests.values() for _, _, marks, _ in rows
                  for _, _, _, w, kind in marks)
     boxes = matched_boxes(witnesses, draft, analysis_dir)
@@ -241,15 +193,15 @@ def write_photos(destination, draft, *, video=None, analysis_dir=None, progress=
             for name, number, marks, options in requests.pop(frame.stamp.frame_id, []):
                 image = _photo(frame, number, marks, options, rois, source.get('alignment_offset_px'), boxes)
                 if not cv2.imwrite(str(stage/name), image):
-                    raise OSError(f'사진을 저장하지 못했습니다: {name}')
+                    raise OSError(f'Could not save photo: {name}')
                 count += 1
                 if progress:
-                    progress(f'원영상 사진 {count}/{total}')
+                    progress(f'Source video photos: {count}/{total}')
             if not requests:
                 break
         if requests:
-            raise ValueError('원영상에서 일부 관측 프레임을 찾을 수 없습니다.')
+            raise ValueError('Some observed frames could not be found in the source video.')
         if file_hash(path) != source['video_sha256']:
-            raise ValueError('사진 생성 중 원본 영상이 변경되었습니다.')
+            raise ValueError('The source video changed during photo generation.')
         stage.rename(destination)
     return count, missing

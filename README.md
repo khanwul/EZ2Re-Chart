@@ -99,7 +99,7 @@ again. Motion, fusion, and decode caches are reused when their inputs match.
 
 ## Output
 
-Open **채보.png** in the result directory printed by `extract` or `reconstruct`.
+Open **chart.png** in the result directory printed by `extract` or `reconstruct`.
 Read each column from bottom to top, then move right. Each column spans four
 measures when the measure length is known, or sixteen beats otherwise. Short
 bars mark taps and filled strips mark holds. Thin solid lines mark each beat,
@@ -113,12 +113,12 @@ competing note interpretations or a pair of possible beat positions found during
 The key beneath the chart lists the lane and beat for each choice. A question
 mark means that the beat is unknown.
 
-Extraction also saves original video photos in `검토사진-r0000/`. Open the photos
+Extraction also saves original video photos in `review-photos-r0000/`. Open the photos
 for one item together. For example, `check-0003-01.png` and `check-0003-02.png`
 show observed moments for item 3. A bright pink outline with a dark outer edge marks each tap. Hold heads are open at the top
 and tails are open at the bottom, toward the body of the hold. Read the question at the top, compare the listed answers and use the
 command beside your choice. When there are no numbered choices, the
-`참고사진-r0000/` folder contains previews that require no input.
+`preview-photos-r0000/` folder contains previews that require no input.
 
 Each photo folder is a snapshot of the draft revision. After editing, or to
 create photos for a reconstructed or older run, use `ez2rc photos --run <result-directory>`.
@@ -148,13 +148,13 @@ To compare the current draft with the recording, run this from the result direct
 ez2rc overlay
 ```
 
-Open `대조.mp4` in a video player. Pink outlines follow the estimated positions
+Open `overlay.mp4` in a video player. Pink outlines follow the estimated positions
 of the current taps and holds. Solid gold lines mark measure boundaries
 (`M1` starts at beat zero). Dashed blue lines mark whole beats, labeled with
 their absolute beat number (`B1` is one beat after zero). Pause or slow playback to compare their lanes
 and endpoints with the visible notes. Numbered barlines anchor the outlines,
 and measured scroll links carry them between frames. Frames without a linked
-position show “위치 대조 불가” (position unavailable). The command reports notes
+position show “Position unavailable”. The command reports notes
 omitted because a beat is unknown. The movie retains the recording's frame
 times and audio. Progress on stderr shows elapsed time, the frame-processing
 bar, and the final MP4 save stage. For partial extractions, the bar uses video

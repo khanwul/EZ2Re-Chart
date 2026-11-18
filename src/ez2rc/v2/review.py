@@ -35,7 +35,7 @@ def write_review(path, draft):
             note['status'], note['origin'], ', '.join(note['issues'])))
             + '<td>' + ' '.join(previews) + '</td></tr>')
     title = escape(draft['metadata']['title'])
-    html = (f'<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} — draft review</title>'
+    html = (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} — draft review</title>'
             '<style>body{font:16px system-ui;margin:2rem}video{width:100%;max-height:60vh;background:#111}'
             'table{border-collapse:collapse;width:100%}td,th{padding:.5rem;border-bottom:1px solid #ccc;text-align:left}'
             'button,input{font:inherit}header{background:white;padding:.5rem}</style>'
@@ -54,7 +54,7 @@ def write_review(path, draft):
             f'{len(draft["projection"]["unprocessed_motion"])} uncertain motion spans. '
             'An alternative is not an additional selected note.</p>'
             + chart_view(draft) +
-            '<h2>노트 상세 · 대안 후보</h2><div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Selection</th><th>Lane</th><th>Type</th><th>Start beat</th><th>End beat</th>'
+            '<h2>Note details and alternatives</h2><div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Selection</th><th>Lane</th><th>Type</th><th>Start beat</th><th>End beat</th>'
             '<th>Status</th><th>Origin</th><th>Issues</th><th>Video witnesses</th></tr></thead><tbody>'
             + ''.join(rows) + '</tbody></table></div><h2>Uncertain motion spans</h2><ul>'
             + ''.join(f'<li>{r["start_ms"]/1000:.3f}–{r["end_ms"]/1000:.3f}s '

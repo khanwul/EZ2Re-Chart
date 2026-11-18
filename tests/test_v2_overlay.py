@@ -72,8 +72,8 @@ class OverlayTest(unittest.TestCase):
             with redirect_stderr(log):
                 self.assertEqual(main(['overlay', '--run', str(run)]), 0)
             messages = log.getvalue()
-            for stage in ('초안 읽는 중', '원본 영상 확인 중', '위치 계산 중', '0.0%', '100.0%',
-                          '126/126 frames', '마무리 중'):
+            for stage in ('reading chart draft', 'checking the source video', 'calculating note positions', '0.0%', '100.0%',
+                          '126/126 frames', 'finalizing audio and video'):
                 self.assertIn(stage, messages)
             self.assertNotIn('\r', messages)
             quiet_log = StringIO()
@@ -81,7 +81,7 @@ class OverlayTest(unittest.TestCase):
                 self.assertEqual(main(['overlay', '--run', str(run), '--no-progress',
                                        '--output', str(root/'quiet.mp4')]), 0)
             self.assertEqual(quiet_log.getvalue(), '')
-            output = run/'대조.mp4'
+            output = run/'overlay.mp4'
             with av.open(str(root/'video.mkv')) as original, av.open(str(output)) as rendered:
                 self.assertEqual([f.pts*f.time_base for f in original.decode(video=0)],
                                  [f.pts*f.time_base for f in rendered.decode(video=0)])

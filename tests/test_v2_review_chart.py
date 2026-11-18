@@ -38,18 +38,18 @@ class ReviewChartTest(unittest.TestCase):
     def test_unknown_start_is_listed_without_inventing_position(self):
         html = chart_view(draft([note('unknown', None)]))
         self.assertNotIn('<svg', html)
-        self.assertIn('시작 박자 확인 필요', html)
+        self.assertIn('Start beat needs review', html)
         self.assertIn('href="#note-0"', html)
 
     def test_negative_fractional_beats_and_untrusted_ids(self):
         html = chart_view(draft([note('<img src=x onerror=alert(1)>', [-1, 2])]))
-        self.assertIn('-16–0박', html)
+        self.assertIn('-16–0 beats', html)
         self.assertIn('&lt;img', html)
         self.assertNotIn('<img', html)
-        self.assertIn('마디 번호 대신 박자 눈금', html)
+        self.assertIn('shows beat ticks', html)
 
     def test_empty_and_unknown_tail_are_displayable(self):
-        self.assertIn('표시 가능한 박자 위치가 없습니다', chart_view(draft([])))
+        self.assertIn('No beat positions to display', chart_view(draft([])))
         row = {**note('partial', [2, 1]), 'type': 'longnote', 'status': 'unresolved'}
         html = chart_view(draft([row]))
         self.assertIn('>?</text>', html)

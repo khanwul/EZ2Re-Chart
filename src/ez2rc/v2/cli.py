@@ -30,7 +30,7 @@ def main(argv=None):
     photos.add_argument('--video', type=Path, help='original recording in a new location')
     overlay = commands.add_parser('overlay', help='draw the current draft over the original recording')
     overlay.add_argument('--no-progress', action='store_true', help='hide progress messages')
-    overlay.add_argument('--output', type=Path, help='new MP4 file (default: 대조.mp4)')
+    overlay.add_argument('--output', type=Path, help='new MP4 file (default: overlay.mp4)')
     overlay.add_argument('--video', type=Path, help='original recording in a new location')
     choose = commands.add_parser('choose', help='apply a numbered choice from the PNG')
     for command in (chart, choose, photos, overlay):
@@ -136,18 +136,18 @@ def main(argv=None):
         print(f"{run['status']}: {result_dir}")
         if 'picture' in run:
             from .picture import IMAGE_NAME
-            print(f"채보 그림: {result_dir / IMAGE_NAME}")
+            print(f"Chart image: {result_dir / IMAGE_NAME}")
             count = run['picture']['pending_choices']
-            print(f"번호가 붙은 확인 항목 {count}개")
+            print(f"Numbered review items: {count}")
             if run['picture'].get('photos'):
-                print(f"원영상 사진 {run['picture']['photos']}장: {result_dir / run['picture']['folder']}")
+                print(f"{run['picture']['photos']} source video photos: {result_dir / run['picture']['folder']}")
             if run['picture'].get('missing_items'):
-                print(f"관측 프레임이 없는 항목 {len(run['picture']['missing_items'])}개")
+                print(f"Items without observed frames: {len(run['picture']['missing_items'])}")
             if 'photo_error' in run['picture']:
-                print(f"사진 생성 실패: {run['picture']['photo_error']}", file=sys.stderr)
+                print(f"Photo generation failed: {run['picture']['photo_error']}", file=sys.stderr)
             if count:
                 print(f"cd {shlex.quote(str(result_dir))}")
-                print("ez2rc choose 1     # 첫 항목의 선택지 보기")
+                print("ez2rc choose 1     # show choices for the first item")
         elif 'draft' in run:
             print(f"Editable draft saved: {root / 'draft.json'} ({run['draft']['notes']} notes; video review required).")
         for warning in run.get("warnings", []):
@@ -172,7 +172,7 @@ def picture_command(args):
     if not path.is_file():
         path = directory / 'draft.json'
     if not path.is_file():
-        raise ValueError('결과 폴더에서 실행하거나 --run 옵션으로 결과 폴더를 지정하세요.')
+        raise ValueError('Run this command in the result directory or specify it with --run.')
     image = directory / IMAGE_NAME
     if args.command == 'chart':
         with draft_lock(path):
@@ -181,15 +181,15 @@ def picture_command(args):
         return 0
     if args.command == 'overlay':
         from .overlay import write_overlay
-        destination = args.output or directory / '대조.mp4'
+        destination = args.output or directory / 'overlay.mp4'
         with progress_display(sys.stderr, enabled=not args.no_progress) as progress:
             if progress:
-                progress('대조 영상 · 채보 초안 읽는 중')
+                progress('Overlay: reading chart draft')
             placed, total, omitted = write_overlay(destination, read_draft(path), path.parent,
                                                   video=args.video, progress=progress)
-        print(f'대조 영상: {destination} · 위치 대조 가능 {placed}/{total} 프레임')
+        print(f'Overlay video: {destination} ({placed}/{total} frames with position data)')
         if omitted:
-            print(f'박자 정보가 부족해 표시할 수 없는 노트 {omitted}개')
+            print(f'Notes omitted due to missing beat positions: {omitted}')
         return 0
     draft = read_draft(path)
     if args.command == 'photos':
@@ -197,49 +197,49 @@ def picture_command(args):
         destination = args.output or directory / photo_folder(draft)
         count, missing = write_photos(destination, draft, video=args.video, analysis_dir=path.parent)
         if count:
-            print(f'원영상 사진 {count}장: {destination}')
+            print(f'{count} source video photos: {destination}')
         else:
-            print('사진으로 표시할 관측 프레임이 없습니다.')
+            print('No observed frames are available for photos.')
         if missing:
-            print('관측 프레임이 없는 항목: ' + ', '.join(map(str, missing)))
+            print('Items without observed frames: ' + ', '.join(map(str, missing)))
         return 0
     item = pending_items(draft).get(args.number)
     if item is None:
-        raise ValueError('이 번호로 선택할 항목이 없습니다. 현재 채보 그림을 확인하세요.')
+        raise ValueError('No pending choice has this number. Check the current chart image.')
     letter = (args.letter or 'A').upper()
     if args.frame:
         from .review import export_frame
         note = item.options.get(letter)
         if note is None:
-            raise ValueError('그림에 표시된 후보 문자를 입력하세요.')
+            raise ValueError('Enter a choice letter shown in the chart image.')
         evidence = note['evidence']
         side = args.side or next((s for s in ('start', 'end') if (evidence.get(s) or {}).get('witnesses')), 'start')
         if not (evidence.get(side) or {}).get('witnesses'):
-            raise ValueError('이 위치에는 저장된 원본 프레임 근거가 없습니다.')
+            raise ValueError('There is no saved source frame for this position.')
         export_frame(draft, args.frame, identity=note['id'], side=side, video=args.video, analysis_dir=path.parent)
         print(args.frame)
         return 0
     if args.side or args.video:
-        raise ValueError('--side와 --video는 --frame과 함께 사용하세요.')
+        raise ValueError('Use --side and --video with --frame.')
     if not args.letter:
         from .photos import review_question
-        print(f'{item.number}번 · {review_question(item.options)}')
+        print(f'Item {item.number}: {review_question(item.options)}')
         for key, note in item.options.items():
             start = beat_text(note['start_beat'])
             if note['type'] == 'tap':
-                action = f'일반 노트 · {start}박'
+                action = f'Tap at beat {start}'
             else:
-                action = f"롱노트 · 시작 {start}박 · 끝 {beat_text(note['end_beat'])}박"
+                action = f"Hold from beat {start} to beat {beat_text(note['end_beat'])}"
             seconds = witness_time(note)
-            when = f' · 원영상 {seconds:.3f}초' if seconds is not None else ''
+            when = f' · video {seconds:.3f}s' if seconds is not None else ''
             print(f'{key}  {action}{when}')
-        print('X  노트 삭제')
+        print('X  Remove the note')
         frame_letter = next((key for key, row in item.options.items() if witness_time(row) is not None), None)
         if frame_letter:
-            print(f'원본 프레임 저장: ez2rc choose {item.number} {frame_letter} --frame 확인.png')
+            print(f'Save the source frame: ez2rc choose {item.number} {frame_letter} --frame check.png')
         return 0
     fields = {side + '_beat': parse_beat(getattr(args, side)) for side in ('start', 'end') if getattr(args, side) is not None}
     edited = decide(draft, item, letter, fields)
     save_draft(path, edited, expected_sha=draft['document_sha256'], picture_path=image)
-    print(f'{item.number}{letter} 저장 · 남은 항목 {len(pending_items(edited))}개 · {image}')
+    print(f'Saved {item.number}{letter}. Remaining items: {len(pending_items(edited))}. Chart: {image}')
     return 0

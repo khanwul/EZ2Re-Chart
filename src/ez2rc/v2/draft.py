@@ -134,7 +134,7 @@ def save_draft(path, value, *, expected_sha=None, picture_path=None):
                 try:
                     os.replace(staged, picture_path)
                 except OSError as exc:
-                    raise OSError('선택은 저장되었습니다. ez2rc chart 명령으로 그림을 갱신하세요.') from exc
+                    raise OSError('Your choice was saved. Run ez2rc chart to refresh the image.') from exc
 
 
 def parse_beat(text):

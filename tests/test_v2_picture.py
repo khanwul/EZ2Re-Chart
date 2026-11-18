@@ -128,10 +128,10 @@ class PictureTest(unittest.TestCase):
         from ez2rc.v2.photos import review_question, _answers
         a = {'lane': 2, 'type': 'longnote', 'start_beat': [1,1], 'end_beat': [3,1]}
         options = {'A': a, 'B': {**a, 'end_beat': [4,1]}}
-        self.assertEqual(review_question(options), '3번 레인의 롱노트는 몇 박에서 끝나나요?')
-        self.assertIn('끝 4박', _answers(options, 3, True)[1])
-        self.assertIn('ez2rc choose 3 B', _answers(options, 3, True)[1])
-        self.assertIn('--end <박자>', _answers({'A': {**a, 'end_beat': None}}, 3, True)[0])
+        self.assertEqual(review_question(options), 'Lane 3: on which beat does the hold end?')
+        self.assertIn('end beat 4', _answers(options, 3)[1])
+        self.assertIn('ez2rc choose 3 B', _answers(options, 3)[1])
+        self.assertIn('--end <beat>', _answers({'A': {**a, 'end_beat': None}}, 3)[0])
 
     def test_review_photos_point_to_observed_lane_after_manual_lane_edit(self):
         from ez2rc.v2.photos import _requests

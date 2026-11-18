@@ -16,7 +16,7 @@ import numpy as np
 from .contracts import read_ratio
 from .draft import change_note
 
-IMAGE_NAME = '채보.png'
+IMAGE_NAME = 'chart.png'
 
 
 @dataclass
@@ -76,15 +76,15 @@ def decide(draft, item, letter, fields):
     identity = item.note['id']
     if letter == 'X':
         if fields:
-            raise ValueError('삭제할 때는 박자를 입력하지 않습니다.')
+            raise ValueError('Omit beat values when removing a note.')
         return change_note(draft, 'delete', identity=identity)
     if letter not in item.options:
-        raise ValueError('그림에 표시된 선택지를 입력하세요.')
+        raise ValueError('Enter a choice shown in the chart image.')
     candidate = item.options[letter]
     for side in ('start', 'end') if candidate['type'] == 'longnote' else ('start',):
         key = side + '_beat'
         if fields.get(key, candidate[key]) is None:
-            raise ValueError(f'위치를 확인한 뒤 --{side} 옵션으로 박자를 입력하세요.')
+            raise ValueError(f'Check the position and supply the beat with --{side}.')
     if candidate['id'] == identity:
         beats = {key: candidate[key] for key in ('start_beat', 'end_beat')}
         return change_note(draft, 'edit', identity=identity, fields={**beats, **fields}, confirm=True)

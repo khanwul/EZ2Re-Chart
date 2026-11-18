@@ -48,7 +48,7 @@ def matched_boxes(witnesses, draft, analysis_dir):
         return boxes
     cache = Cache(path)
     if cache.id != draft['source'].get('observation_cache_id'):
-        raise ValueError('초안과 관측 자료가 일치하지 않습니다.')
+        raise ValueError('The observation data does not match the draft.')
     shapes = template_shapes(cache.manifest['key']['parameters'])
     if shapes is None:
         return boxes
@@ -62,7 +62,7 @@ def matched_boxes(witnesses, draft, analysis_dir):
                 if key in missing:
                     x, y = map(int, chunk['positions'][i,k])
                     if y != missing[key]['y_px']:
-                        raise ValueError('저장된 노트 위치와 관측 좌표가 일치하지 않습니다.')
+                        raise ValueError('The saved note position does not match the observation coordinates.')
                     height, width = shapes[lane][kind]
                     boxes[key] = [x, y, width, height]
                     del missing[key]

@@ -16,7 +16,6 @@ from .contracts import read_ratio
 from .motion import STATUS, open_motion, timeline
 from .observation import template_shapes
 from .progress import frame_progress
-from .photos import _korean_font
 from .storage import digest, file_hash, read_json
 from .window import in_interval
 from .witness_box import OUTLINE_PINK
@@ -154,13 +153,9 @@ class Outlines:
                 cv2.rectangle(roi, (left, y1), (right, y2), color, width)
 
 
-def _banner(text, fallback, width, height):
-    font = _korean_font()
+def _banner(text, width, height):
     strip = np.full((36, 540, 3), 28, dtype=np.uint8)
-    if font:
-        cv2.putText(strip, text, (10, 26), (250, 250, 250), font, 20)
-    else:
-        cv2.putText(strip, fallback, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, .65, (250, 250, 250), 1)
+    cv2.putText(strip, text, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, .65, (250, 250, 250), 1)
     factor = min(1, width / 1080, height / 600)
     return cv2.resize(strip, (max(1, round(540*factor)), max(1, round(36*factor))))
 
@@ -190,9 +185,8 @@ def _encode(source, destination, outlines, beat_grid, origins, capture, progress
                     audio.layout = layout
                 audios[stream.index] = audio
                 transcode.add(stream.index)
-        active = _banner('분홍 테두리: 노트   금색 실선: 마디   하늘색 점선: 박',
-                         'Pink: notes   Gold: measures   Blue dashes: beats', video.width, video.height)
-        unknown = _banner('위치 대조 불가', 'Position unavailable', video.width, video.height)
+        active = _banner('Pink: notes   Gold: measures   Blue dashes: beats', video.width, video.height)
+        unknown = _banner('Position unavailable', video.width, video.height)
         duration_ms = None
         if video.duration:
             duration_ms = float(video.duration * video.time_base * 1000)
@@ -201,7 +195,7 @@ def _encode(source, destination, outlines, beat_grid, origins, capture, progress
 
         def report_frames(timestamp_ms, *, complete=False):
             progress(frame_progress(frame_count, timestamp_ms, 0, duration_ms, complete=complete,
-                                    label='대조 영상 · 프레임 처리', total_frames=frame_count if complete else total_frames))
+                                    label='Overlay: processing frames', total_frames=frame_count if complete else total_frames))
 
         if progress:
             report_frames(0)
@@ -219,7 +213,7 @@ def _encode(source, destination, outlines, beat_grid, origins, capture, progress
                 continue
             for frame in packet.decode():
                 if frame.is_corrupt:
-                    raise ValueError(f'원영상 프레임 {frame_count}이 손상되었습니다.')
+                    raise ValueError(f'Source video frame {frame_count} is corrupt.')
                 stamp = clock.stamp(frame_count, frame.pts, frame.time_base, frame.duration)
                 if frame_count == 0:
                     first_pts = frame.pts if frame.pts is not None else (video.start_time or 0)
@@ -232,7 +226,7 @@ def _encode(source, destination, outlines, beat_grid, origins, capture, progress
                 if position is not None:
                     ms, origin = position
                     if abs(stamp.timestamp_ms - ms) > .001:
-                        raise ValueError('원영상과 분석 프레임의 시각이 일치하지 않습니다.')
+                        raise ValueError('Source video and analysis frame timestamps do not match.')
                     beat_grid.draw(image, origin)
                     outlines.draw(image, origin)
                     banner = active
@@ -249,10 +243,10 @@ def _encode(source, destination, outlines, beat_grid, origins, capture, progress
                     report_frames(stamp.timestamp_ms)
                     next_update = time.monotonic() + 2
         if not frame_count or frame_count < capture.get('decoded_frames', 0):
-            raise ValueError('원영상 프레임이 부족합니다.')
+            raise ValueError('The source video contains fewer frames than expected.')
         if progress:
             report_frames(stamp.timestamp_ms, complete=True)
-            progress('대조 영상 · 오디오와 영상 마무리 중')
+            progress('Overlay: finalizing audio and video')
         for index in transcode:
             for compressed in audios[index].encode(None):
                 output.mux(compressed)
@@ -264,15 +258,15 @@ def _encode(source, destination, outlines, beat_grid, origins, capture, progress
 def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None):
     destination = Path(destination)
     if destination.suffix.lower() != '.mp4' or destination.exists():
-        raise ValueError('저장할 새 MP4 경로를 --output으로 지정하세요.')
+        raise ValueError('Specify a new MP4 output path with --output.')
     source = draft['source']
     recording = Path(video or source['video'])
     if progress:
-        progress('대조 영상 · 원본 영상 확인 중')
+        progress('Overlay: checking the source video')
     if not recording.is_file() or file_hash(recording) != source['video_sha256']:
-        raise ValueError('초안과 같은 원본 영상을 --video로 지정하세요.')
+        raise ValueError('Use --video to specify the original recording that matches the draft.')
     if progress:
-        progress('대조 영상 · 분석 자료 확인 및 노트 위치 계산 중')
+        progress('Overlay: checking analysis data and calculating note positions')
     artifacts = analysis_dir / 'artifacts'
     obs = read_json(artifacts/'observations/manifest.json', 'ez2rc.stage-cache')
     motion = open_motion(artifacts/'motion')
@@ -282,13 +276,13 @@ def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None
             or motion.id != source['motion_cache_id']
             or motion.manifest['key']['parents'] != [obs['cache_id']]
             or grid['observation_cache_id'] != obs['cache_id'] or grid['motion_cache_id'] != motion.id):
-        raise ValueError('초안과 위치 분석 자료가 일치하지 않습니다.')
+        raise ValueError('The position analysis data does not match the draft.')
     meta = obs['metadata']
     shapes = template_shapes(obs['key']['parameters'])
     projection = draft['projection']
     bounds = projection.get('scale_px_per_beat')
     if not bounds or not shapes or meta.get('alignment_offset_px') is None:
-        raise ValueError('영상 대조에 필요한 박자 간격 또는 레인 위치 정보가 없습니다.')
+        raise ValueError('Beat spacing or lane geometry is missing for this overlay.')
     scale = sum(float(read_ratio(v)) for v in bounds) / 2
     clock = timeline(motion)
     positions = frame_origins(clock, grid, scale)
@@ -297,7 +291,7 @@ def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None
     origins = {fid: (ms, positions[fid]) for fid, ms in zip(clock['frame_id'][included], clock['timestamp_ms'][included])
                if fid in positions}
     if not origins:
-        raise ValueError('마디선과 스크롤 위치를 연결할 수 있는 프레임이 없습니다.')
+        raise ValueError('No frames link a numbered barline to a scroll position.')
     outlines = Outlines(draft, meta['profile'], shapes, meta['alignment_offset_px'], scale)
     beat_grid = BeatGrid(meta['profile'], meta['alignment_offset_px'], scale, projection.get('measure_beats'))
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +305,6 @@ def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None
             placed, total = _encode(recording, temp, outlines, beat_grid, origins, meta['capture'], progress,
                                     total_frames=total_frames)
         except av.FFmpegError as exc:
-            raise ValueError(f'대조 영상을 인코딩할 수 없습니다: {exc}') from exc
+            raise ValueError(f'Could not encode the overlay video: {exc}') from exc
         os.link(temp, destination)
     return placed, total, outlines.omitted
