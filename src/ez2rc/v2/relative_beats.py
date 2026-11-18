@@ -376,7 +376,7 @@ independence assumption. Extrapolation is opt-in and always labelled.
 
 
 def project_relative_beats(observations, movement, decoded, reference, *, measure_beats, rhythm_grid=None,
-                           physical_review=None):
+                           physical_review=None, draft_tap_anchors=False):
     """Produce relative beat ranges and separate capture ranges for selections.
 
 Scoped offsets are total downward offsets from the detection reference, not
@@ -406,7 +406,8 @@ coordinates into exact chart notes or accepted judgment times.
             observations, movement, decoded, {a['id']:read_ratio(a['beat']) for a in reference['anchors']},
             request['anchor_observations'], request['localization_error_px'], reference['endpoint_calibrations'],
             localization_scope=(LOCALIZATION_SCOPE if request['version'] in (GEOMETRY_VERSION,'observed-spatial-constraints-5')
-                                else LEGACY_LOCALIZATION_SCOPE), reviewed_localizations=localizations)
+                                else LEGACY_LOCALIZATION_SCOPE), reviewed_localizations=localizations,
+            draft_tap_anchors=draft_tap_anchors)
         geometry_diagnostics['scale_bounds_px_per_beat'] = [ratio(v) for v in geometry.scale] if geometry.scale else None
         geometry_diagnostics['scale_px_per_beat'] = closed(*geometry.scale) if geometry.status == 'conditional' else None
         geometry_diagnostics['anchor_pair_count'] = geometry.anchor_pair_count

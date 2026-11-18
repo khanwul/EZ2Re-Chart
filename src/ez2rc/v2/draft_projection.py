@@ -13,7 +13,7 @@ from .observation import template_shapes
 from .relative_beats import project_relative_beats
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-3'
+VERSION = 'screen-coordinate-draft-4'
 
 
 def project_draft(observations, movement, decoded, barlines, *, allowed_candidates=None, analysis_scope=None):
@@ -65,7 +65,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     reference = spatial_reference(barlines, calibration)
     shapes = template_shapes(observations.manifest['key']['parameters'])
     relative = (project_relative_beats(observations, movement, decoded, reference,
-                                      measure_beats=read_ratio(reference['measure_beats']))
+                                      measure_beats=read_ratio(reference['measure_beats']), draft_tap_anchors=True)
                 if reference is not None and shapes is not None else None)
     relative_rows = {r['candidate_id']: r for r in relative['candidates']} if relative else {}
     origin_issues = list(barlines['reasons'])
@@ -143,6 +143,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             'coordinate': 'first_numbered_barline_zero', 'origin_issues': sorted(set(origin_issues)),
             'scale_px_per_beat': scale, 'scale_basis': 'shared_observation_geometry',
             'geometry_status': geometry.get('status', 'unavailable'),
+            'draft_tap_anchors': geometry.get('draft_tap_anchors', []),
             'geometry_issues': geometry_issues,
             'localization_assumption_px': error, 'unprocessed_motion': gaps, 'tail_beat_extension': [0, 1],
             'limitations': ['All automatic values need video review; missing notes may be undetected.',

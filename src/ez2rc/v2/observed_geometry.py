@@ -52,7 +52,7 @@ def _raw(frame, lane, kind, seed):
 
 def observed_geometry(observations, movement, decoded, anchors, anchor_observations, error_px,
                       optical_calibrations=(), *, localization_scope=LOCALIZATION_SCOPE,
-                      reviewed_localizations=()):
+                      reviewed_localizations=(), draft_tap_anchors=False):
     """Condition on retained links and selected physical endpoint hypotheses.
 
     A raw template response receives a location bound only under a selected
@@ -247,6 +247,11 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
         optical_diagnostics[eid]['node'] = node
     graph.prepare(nominal)
     model = ConstantSpacingMap(graph,numbered,set(destinations.values()))
+    tap_anchors = []
+    if draft_tap_anchors and model.status == 'conditional':
+        from .draft_tap_anchors import extend_draft_tap_anchors
+        model, tap_anchors = extend_draft_tap_anchors(
+            model, destinations, endpoints, observations, shapes, threshold, error)
     diagnostics = {'version': VERSION, 'observation_cache_id': observations.id, 'motion_cache_id': movement.id,
                    'decode_cache_id': decoded.id, 'status': model.status,
                    'nodes': len(graph.edges), 'edges': sum(map(len,graph.edges.values())),
@@ -258,6 +263,8 @@ def observed_geometry(observations, movement, decoded, anchors, anchor_observati
                                    'declared_raw_localization_bound', 'numbered_barline_identity',
                                    'constant_positive_spatial_scale'],
                    'verified': False}
+    if tap_anchors:
+        diagnostics['draft_tap_anchors'] = tap_anchors
     if reviewed:
         diagnostics['reviewed_localizations'] = list(reviewed.values())
         diagnostics['reviewed_localization_semantics'] = (
