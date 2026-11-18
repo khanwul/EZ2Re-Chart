@@ -142,6 +142,21 @@ Use `ez2rc chart --run <result-directory>` to regenerate the PNG, including for
 older runs with a top-level `draft.json`. The same `--run` option works with
 `choose` from outside the result directory.
 
+To compare the current draft with the recording, run this from the result directory:
+
+```bash
+ez2rc overlay
+```
+
+Open `대조.mp4` in a video player. Pink outlines follow the estimated positions
+of the current taps and holds. Pause or slow playback to compare their lanes
+and endpoints with the visible notes. Numbered barlines anchor the outlines,
+and measured scroll links carry them between frames. Frames without a linked
+position show “위치 대조 불가” (position unavailable). The command reports notes
+omitted because a beat is unknown. The movie retains the recording's frame
+times and audio. Use `--video` if the recording moved, `--run` to select a run,
+or `--output another.mp4` to save a new comparison after editing.
+
 Reusable stage caches live in `out/.cache/` by default. `extract --cache-root`
 selects another cache root. Exit codes are `0` for complete, `2` for partial,
 and `1` for failed runs; current successful v2 runs return `2`.

@@ -27,8 +27,11 @@ def main(argv=None):
     photos = commands.add_parser('photos', help='save numbered review photos from the original video')
     photos.add_argument('--output', type=Path, help='new directory for the photos')
     photos.add_argument('--video', type=Path, help='original recording in a new location')
+    overlay = commands.add_parser('overlay', help='draw the current draft over the original recording')
+    overlay.add_argument('--output', type=Path, help='new MP4 file (default: 대조.mp4)')
+    overlay.add_argument('--video', type=Path, help='original recording in a new location')
     choose = commands.add_parser('choose', help='apply a numbered choice from the PNG')
-    for command in (chart, choose, photos):
+    for command in (chart, choose, photos, overlay):
         command.add_argument('--run', type=Path, default=Path('.'), help='result directory (default: here)')
     choose.add_argument('number', type=int)
     choose.add_argument('letter', nargs='?', help='letter in the picture, or X to remove')
@@ -75,7 +78,7 @@ def main(argv=None):
                                  help="observation cache directory, or run/artifacts/observations")
     args = parser.parse_args(argv)
     try:
-        if args.command in ('chart', 'choose', 'photos'):
+        if args.command in ('chart', 'choose', 'photos', 'overlay'):
             return picture_command(args)
         if args.command == 'init':
             from .setup import initialize
@@ -179,6 +182,14 @@ def picture_command(args):
         with draft_lock(path):
             write_picture(image, read_draft(path))
         print(image)
+        return 0
+    if args.command == 'overlay':
+        from .overlay import write_overlay
+        destination = args.output or directory / '대조.mp4'
+        placed, total, omitted = write_overlay(destination, read_draft(path), path.parent, video=args.video)
+        print(f'대조 영상: {destination} · 위치 대조 가능 {placed}/{total} 프레임')
+        if omitted:
+            print(f'박자 정보가 부족해 표시할 수 없는 노트 {omitted}개')
         return 0
     draft = read_draft(path)
     if args.command == 'photos':
