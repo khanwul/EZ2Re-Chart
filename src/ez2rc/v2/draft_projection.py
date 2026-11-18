@@ -11,7 +11,7 @@ from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-7'
+VERSION = 'screen-coordinate-draft-8'
 
 
 def apply_start_grid(note):

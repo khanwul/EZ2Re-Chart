@@ -37,6 +37,79 @@ def _components(graph):
     return components
 
 
+def _entry_bottom(rows, full, top, height, threshold, similarity):
+    """Locate a moving cap's visible suffix against the viewport's top edge."""
+    dark = np.flatnonzero(rows < threshold)
+    if not len(dark):
+        return None
+    count = int(dark[0])
+    if not max(4, (height + 2) // 3) <= count < height:
+        return None
+    if _tap_profile(full, top, height, threshold) is None:
+        return None
+    suffix = full[top + height - count:top + height].astype(float)
+    prefix = rows[:count].astype(float)
+    suffix -= suffix.mean()
+    prefix -= prefix.mean()
+    norm = np.linalg.norm(suffix) * np.linalg.norm(prefix)
+    if not norm or prefix @ suffix < similarity * norm:
+        return None
+    return count - 1
+
+
+def _entry_anchors(model, destinations, endpoints, observations, shapes, components,
+                   anchored, similarity):
+    profile = observations.manifest['metadata']['profile']
+    threshold = observations.manifest['key']['parameters']['algorithm']['brightness_threshold']
+    requests = defaultdict(list)
+    for eid, node in destinations.items():
+        if components[node] in anchored or endpoints[eid]['kind'] != 'tap':
+            continue
+        frames = {int(oid.split(':', 1)[0][1:]) for oid in endpoints[eid]['observation_ids']}
+        lane = int(endpoints[eid]['observation_ids'][0].split(':')[1][1:])
+        height = shapes[lane]['tap'][0]
+        # Use two consecutive localized full patches of the selected track.
+        observed = model.graph.edges[node]
+        usable = sorted(f for f in frames if f'frame:{f}' in observed)
+        if len(usable) < 2 or usable[1] != usable[0] + 1:
+            continue
+        first, second = usable[:2]
+        if components.get(f'frame:{first - 1}') == components[node]:
+            continue
+        roi_top = profile['lanes'][lane]['roi'][1]
+        def top_interval(frame):
+            at = f'frame:{frame}'
+            return (profile['judge_y'] - model.graph.edges[at][node][0] - roi_top,
+                    profile['judge_y'] + observed[at][0] - roi_top)
+        lo, hi = top_interval(first)
+        top = (lo + hi) / 2
+        if not float(top).is_integer() or top <= 0:
+            continue
+        later_lo, later_hi = top_interval(second)
+        # The measured entry must agree with the next observed displacement.
+        # This is an identity check. Only the visible bottom supplies a bound.
+        requests[first].append((eid, lane, int(top), height, later_lo - hi, later_hi - lo))
+    evidence = []
+    if requests:
+        previous = None
+        for chunk in observations.chunks():
+            for i, fid in enumerate(chunk['frame_id']):
+                frame = int(fid)
+                if frame in requests and previous is not None and previous[0] == frame - 1:
+                    for eid, lane, top, height, lo, hi in requests[frame]:
+                        bottom = _entry_bottom(previous[1][lane], chunk['projection'][i, lane],
+                                               top, height, threshold, similarity)
+                        if bottom is None or not lo <= top + height - 1 - bottom <= hi:
+                            continue
+                        y = profile['lanes'][lane]['roi'][1] + bottom - height + 1
+                        evidence.append({'frame_id': frame - 1, 'endpoint_id': eid, 'tap_y_px': y,
+                                         'observation_id': f'entry-bottom:f{frame-1}:l{lane}',
+                                         'visible_bottom_px': y + height - 1,
+                                         'full_frames': [frame, frame + 1]})
+                previous = (frame, chunk['projection'][i].copy()) if frame + 1 in requests else None
+    return evidence
+
+
 def extend_draft_tap_anchors(model, destinations, endpoints, observations, shapes,
                              min_similarity, error):
     """Bridge disconnected coordinates only with a measured frame-to-cap relation."""
@@ -48,6 +121,11 @@ def extend_draft_tap_anchors(model, destinations, endpoints, observations, shape
     anchored = {components[node] for node in model.anchors}
     profile = observations.manifest['metadata']['profile']
     params = observations.manifest['key']['parameters']['algorithm']
+    entries = _entry_anchors(model, destinations, endpoints, observations, shapes, components,
+                             anchored, min_similarity)
+    entry_nodes = defaultdict(set)
+    for row in entries:
+        entry_nodes[row['frame_id']].add(components[destinations[row['endpoint_id']]])
     requests = defaultdict(dict)
     targets = set()
     for eid, node in destinations.items():
@@ -60,7 +138,8 @@ def extend_draft_tap_anchors(model, destinations, endpoints, observations, shape
             rows[frame].append((lane, seed))
         for frame, sources in rows.items():
             frame_component = components.get(f'frame:{frame}')
-            if (frame_component is None or frame_component == components[node]
+            if ((frame_component is None and not entry_nodes.get(frame, set()) - {components[node]})
+                    or frame_component == components[node]
                     or frame_component in anchored and components[node] in anchored
                     or frame - 1 not in rows):
                 continue
@@ -73,7 +152,7 @@ def extend_draft_tap_anchors(model, destinations, endpoints, observations, shape
                 targets.add((frame, lane, seed))
                 for source in rows[frame - 1]:
                     requests[frame - 1][source] = eid
-    if not requests:
+    if not requests and not entries:
         return model, []
 
     clean_profiles, evidence = defaultdict(dict), []
@@ -117,6 +196,13 @@ def extend_draft_tap_anchors(model, destinations, endpoints, observations, shape
                     continue
                 evidence.append({'frame_id': frame, 'endpoint_id': eid, 'tap_y_px': y,
                                  'observation_id': oid, 'preceding_observation_id': previous_id})
+    # A new frame has no coordinate until at least two different components
+    # observe it. Do not keep a dangling entry (or an unpaired effect patch).
+    peers = defaultdict(set)
+    for row in [*entries, *evidence]:
+        peers[row['frame_id']].add(components[destinations[row['endpoint_id']]])
+    evidence = [r for r in [*evidence, *entries] if f"frame:{r['frame_id']}" in components
+                or len(peers[r['frame_id']]) > 1]
     if not evidence:
         return model, []
     # Test all admitted links together. Keep the original graph intact for

@@ -66,3 +66,52 @@ class DraftTapAnchorTest(unittest.TestCase):
         self.assertIsNone(model.project('cap'))
         self.assertEqual(len(evidence), 2)
         self.assertTrue(all('rejected' in row for row in evidence))
+
+
+class DraftEntryTest(unittest.TestCase):
+    def reconstruct(self, *, covered=False, flat=False, reverse=False, jump=False, short=False):
+        # The exiting cap and the entering cap are both seen at frame 1.
+        # Frame 1 originally belongs to neither spatial component.
+        graph = DifferenceGraph()
+        graph.bound('frame:0', 'zero', 0, 0, 'origin')
+        graph.bound('frame:0', 'one', 60, 60, 'measure')
+        graph.bound('frame:0', 'exit', 38, 38, 'full')
+        graph.bound('frame:2', 'entry', 83, 83, 'full')
+        graph.bound('frame:3', 'entry', 63 if jump else 59, 63 if jump else 59, 'full')
+        model = ConstantSpacingMap(graph, {'zero':F(0), 'one':F(1)}, {'entry','exit'})
+        values = np.array([120, 190, 80, 165, 230, 90, 130, 200, 70, 170, 100, 150])
+        image = np.zeros((4, 2, 110))
+        image[0,0,62:74] = values
+        image[1,0,86:98] = values
+        if covered:
+            image[1,0,98] = 180
+        image[2,1,17:29] = values
+        suffix = values[-5:]
+        image[1,1,:5] = suffix[::-1] if reverse else suffix
+        if flat:
+            image[1,1,:5] = 100
+        if short:
+            image[1,1,2:] = 0
+        rows = [(0,0,62),(1,0,86),(2,1,17),(3,1,41)]
+        chunk = dict(frame_id=np.arange(4), candidate_index=np.array(rows),
+                     positions=np.array([[[0,y]] for _,_,y in rows]),
+                     flags=np.array([[0],[2],[0],[0]]), scores=np.ones((4,1)), projection=image)
+        profile = dict(judge_y=100, effect_top=85, lanes=[dict(roi=[0,0,1,110])]*2)
+        obs = SimpleNamespace(chunks=lambda: iter([chunk]), manifest={'metadata':{'profile':profile},
+                              'key':{'parameters':{'algorithm':{'search_radius_px':4,'brightness_threshold':40}}}})
+        ends = {key:{'kind':'tap','observation_ids':[f'f{f}:l{l}:y{y}' for f,l,y in group]}
+                for key, group in [('exit',rows[:2]), ('entry',rows[2:])]}
+        return extend_draft_tap_anchors(model, {k:k for k in ends}, ends, obs, [{'tap':(12,1)}]*2, .8, F(0))
+
+    def test_shared_partial_and_full_caps_create_a_measured_frame(self):
+        model, evidence = self.reconstruct()
+        self.assertEqual(model.project('entry'), (F(131,60), F(131,60)))
+        entry, = (r for r in evidence if r['endpoint_id']=='entry')
+        self.assertEqual((entry['visible_bottom_px'], entry['tap_y_px']), (4,-7))
+
+    def test_requires_the_suffix_motion_and_a_separate_coordinate(self):
+        for key in ('covered','flat','reverse','jump','short'):
+            with self.subTest(key=key):
+                model, evidence = self.reconstruct(**{key:True})
+                self.assertIsNone(model.project('entry'))
+                self.assertFalse(evidence)
