@@ -31,7 +31,9 @@ Follow the three commands in the [quick start](../README.md#quick-start). `init`
 
 ## Review the draft
 
-Open `chart.png` in the result directory. Read each column **from bottom to top**, then move right. Short bars are taps, and vertical strips are holds. Read a tap or hold start at its bottom edge and a hold end at its top edge. Thin lines mark beats and brighter lines mark measures.
+Open `chart.png` in the result directory. Read four measures **from bottom to top** in each column, then scroll right. If the measure length is unknown, each column covers 16 beats.
+
+Short bars are taps, and vertical strips are holds. Read a tap or hold start at its bottom edge and a hold end at its top edge. Thin lines mark beats and brighter lines mark measures.
 
 For the commands below, run this from the repository root, replacing the path with the directory printed by `extract`.
 
@@ -41,7 +43,7 @@ RUN="path/to/result"
 
 ### Check a numbered item
 
-The key beneath your chart lists the choices for each numbered item.
+The key to the right of your chart lists the choices for each numbered item.
 
 1. List the choices with `uv run ez2rc choose 1 --run "$RUN"`, substituting the item number from your chart.
 2. Open the matching photos in `review-photos-r0000/`. For item 1, start with `check-0001-01.png`. To distinguish a hold from a tap, look for a body behind the head and a tail in later frames.

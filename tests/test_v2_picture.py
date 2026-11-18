@@ -16,20 +16,39 @@ from test_v2_barline_pipeline import marked_video
 
 
 class PictureTest(unittest.TestCase):
-    def test_long_five_lane_chart_wraps_with_twenty_pixels_per_quarter_beat(self):
-        # The first eight columns fill one row. Beat 129 belongs in the next row.
+    def test_long_chart_continues_to_the_right_after_eight_columns(self):
+        # Beat 129 belongs one beat above the bottom of the ninth four-measure column.
         draft = {'metadata': {'lane_count': 5}, 'bpm': '120',
                  'projection': {'measure_beats': [4, 1]},
                  'notes': [{'id': 'tap', 'lane': 0, 'start_beat': [129, 1], 'end_beat': None}]}
-        _, first_row, next_row = chart_strips(draft, {})
-        self.assertLessEqual(first_row.shape[1], 1920)
-        self.assertEqual(first_row.shape, next_row.shape)
-        grid = next_row[:, 85]
-        bars = np.flatnonzero((grid == (158, 168, 180)).all(axis=1))
-        start = bars[-1]
-        for offset in (20, 40, 60):
+        _, score = chart_strips(draft, {})
+        measures = (score[:, 85] == (158, 168, 180)).all(axis=1)
+        self.assertEqual(measures.sum(), 5)  # Both ends and three interior barlines.
+        start = np.flatnonzero(measures)[-1]
+        bars_across = (score[start] == (158, 168, 180)).all(axis=1)
+        starts = np.flatnonzero(bars_across & ~np.roll(bars_across, 1))
+        self.assertEqual(len(starts), 9)
+        grid = score[:, starts[-1]]
+        for offset in (15, 30, 45):
             np.testing.assert_array_equal(grid[start - offset], (73, 83, 96))
-        np.testing.assert_array_equal(next_row[start - 80, 44], (232, 238, 247))
+        np.testing.assert_array_equal(score[start - 60, starts[-1] + 1], (232, 238, 247))
+
+    def test_choices_without_beat_positions_continue_in_columns(self):
+        from unittest.mock import patch
+        from ez2rc.v2.picture import label
+
+        notes = [{'id': str(i), 'type': 'tap', 'lane': 0, 'start_beat': None,
+                  'end_beat': None, 'status': 'unresolved', 'issues': [], 'evidence': {}}
+                 for i in range(80)]
+        draft = {'metadata': {'lane_count': 5}, 'bpm': '120', 'projection': {},
+                 'notes': notes, 'automatic': {'notes': notes, 'alternatives': []}}
+        with patch('ez2rc.v2.picture.label', wraps=label) as draw_label:
+            _, key, _ = chart_strips(draft, pending_items(draft))
+        positions = [call.args[2:4] for call in draw_label.call_args_list if call.args[1].startswith('#')]
+        self.assertEqual(len(positions), len(notes))
+        self.assertGreater(positions[-1][0], positions[0][0])
+        self.assertLess(max(y for x, y in positions), key.shape[0])
+        self.assertLess(key.shape[0], 1024)
 
     def test_every_beat_has_a_line_touching_the_bottom_of_on_beat_notes(self):
         # A 48-beat column used to skip alternate beats.

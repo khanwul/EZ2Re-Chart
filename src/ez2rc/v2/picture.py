@@ -142,7 +142,7 @@ def chart_strips(draft, items):
         raise ValueError('invalid measure length')
     lane_width = 36
     panel = 50 + lanes * lane_width
-    grid_top, grid_height = 32, 1280
+    grid_top, grid_height = 32, 960
     grid_bottom = grid_top + grid_height
     bottom_start = draft['projection'].get('default_start_reference') == 'template_bottom'
     phase = Fraction(0) if bottom_start else _display_phase(draft)
@@ -196,8 +196,25 @@ def chart_strips(draft, items):
             ordered.append(block)
         previous = block
 
-    cols = max(1, min(len(ordered), (1920 - 14) // panel))
-    width = max(720, cols * panel + 14)
+    # The score runs in one row. Place the review key to its right so that
+    # adding measures or review choices extends the image horizontally.
+    legend = []
+    for item in items.values():
+        for letter, candidate in item.options.items():
+            seconds = witness_time(candidate)
+            when = f'   video {seconds:.3f}s' if seconds is not None else ''
+            legend.append(f'#{item.number}{letter}    lane {candidate["lane"]+1}    {description(candidate)}{when}')
+    line_height = 25
+    rows_per_column = grid_height // line_height
+    legend_columns = []
+    right_edge = len(ordered) * panel
+    for offset in range(0, len(legend), rows_per_column):
+        lines = legend[offset:offset + rows_per_column]
+        x = right_edge + 16
+        legend_columns.append((x, lines))
+        right_edge = x + max(cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, .48, 1)[0][0]
+                             for line in lines)
+    width = max(720, right_edge + 14)
 
     def blank(height):
         return np.full((height, width, 3), (248, 249, 251), dtype=np.uint8)
@@ -211,9 +228,10 @@ def chart_strips(draft, items):
         label(header, f'Auto-start display shift: {float(-phase):+.4f} beat', 370, 54)
     yield header
 
-    for offset in range(0, len(ordered), cols):
-        strip = blank(grid_bottom + 24)
-        for column, block in enumerate(ordered[offset:offset + cols]):
+    if ordered or legend_columns:
+        height = grid_bottom + 24 if ordered else grid_top + min(len(legend), rows_per_column) * line_height
+        strip = blank(height)
+        for column, block in enumerate(ordered):
             base = block * span
             left = column * panel + 43
             right = left + lanes * lane_width
@@ -278,15 +296,10 @@ def chart_strips(draft, items):
                 numbers = dict.fromkeys(tag.rstrip('ABCDEFGHIJKLMNOPQRSTUVWXYZ') for tag in tags)
                 caption = tags[0] if len(tags) == 1 else '/'.join(numbers)
                 label(strip, caption, x, position-8, (255, 233, 150), .48)
+        for x, lines in legend_columns:
+            for row, line in enumerate(lines):
+                label(strip, line, x, grid_top + row * line_height)
         yield strip
-
-    for item in items.values():
-        for letter, candidate in item.options.items():
-            strip = blank(25)
-            seconds = witness_time(candidate)
-            when = f'   video {seconds:.3f}s' if seconds is not None else ''
-            label(strip, f'#{item.number}{letter}    lane {candidate["lane"]+1}    {description(candidate)}{when}', 16, 18)
-            yield strip
     if items:
         strip = blank(36)
         label(strip,'Choose a letter to keep that note, or X to remove it.  ? = unknown beat.',16,22)
@@ -294,7 +307,7 @@ def chart_strips(draft, items):
 
 
 def write_picture(path, draft):
-    """Encode a tall RGB chart one strip at a time, then atomically publish it."""
+    """Encode an RGB chart one scanline at a time, then atomically publish it."""
     items = pending_items(draft)
     path = Path(path)
     def chunk(stream, kind, payload):
@@ -310,11 +323,13 @@ def write_picture(path, draft):
             for strip in chart_strips(draft, items):
                 rows, width, _ = strip.shape
                 height += rows
-                scanlines = np.zeros((rows, width*3+1), dtype=np.uint8)
-                scanlines[:,1:] = strip.reshape(rows,-1)
-                data = encoder.compress(scanlines.tobytes())
-                if data:
-                    chunk(stream,b'IDAT',data)
+                scanline = np.empty(width*3+1, dtype=np.uint8)
+                scanline[0] = 0  # PNG filter type
+                for row in strip:
+                    scanline[1:] = row.reshape(-1)
+                    data = encoder.compress(scanline)
+                    if data:
+                        chunk(stream,b'IDAT',data)
             chunk(stream,b'IDAT',encoder.flush())
             chunk(stream,b'IEND',b'')
             stream.seek(8)
