@@ -247,19 +247,16 @@ class PictureTest(unittest.TestCase):
                 bounds = last['evidence']['start']['beat_range']
                 self.assertLessEqual(Fraction(*bounds['lower']), 19)
                 self.assertGreaterEqual(Fraction(*bounds['upper']), 19)
-                names = {p.name for p in result.iterdir()}
-                from ez2rc.v2.photos import photo_folder
-                folder = photo_folder(read_draft(result/'.ez2rc/draft.json'))
-                if command == 'extract':
-                    self.assertIn(folder, names)
-                else:
-                    self.assertNotIn(folder, names)
+                self.assertFalse(list(result.glob('*-photos-r*')))
+                self.assertNotIn('folder', run['picture'])
+                self.assertNotIn('source video photos', output.getvalue())
+                if command == 'reconstruct':
                     self.assertEqual(main(['photos','--run',str(result)]), 0)
-                photos = sorted((result/folder).glob('*.png'))
-                self.assertGreater(len(photos), 1)
-                images = [cv2.imread(str(p)) for p in photos[:2]]
-                self.assertTrue(all(im is not None for im in images))
-                self.assertNotEqual(photos[0].read_bytes(), photos[1].read_bytes())
+                    photos = sorted(result.glob('preview-photos-r0000/preview-*.png'))
+                    self.assertGreater(len(photos), 1)
+                    images = [cv2.imread(str(p)) for p in photos[:2]]
+                    self.assertTrue(all(im is not None for im in images))
+                    self.assertNotEqual(photos[0].read_bytes(), photos[1].read_bytes())
                 self.assertIsNotNone(cv2.imread(str(result / IMAGE_NAME)))
                 self.assertFalse((result / '.ez2rc/report.html').exists())
             song.write_text(song.read_text().replace('measure_beats = [4, 1]', ''))
@@ -276,6 +273,9 @@ class PictureTest(unittest.TestCase):
             self.assertIn('Draft partial:', output.getvalue())
             self.assertIn('first barline', output.getvalue())
             self.assertIn('Notes with missing beat positions: 6.', output.getvalue())
+            result = next((root/'out').glob('*/*/*/' + IMAGE_NAME)).parent
+            self.assertTrue((result/'review-photos-r0000/check-0001-01.png').is_file())
+            self.assertIn('source video photos', output.getvalue())
 
     def test_review_question_identifies_the_disputed_endpoint_and_action(self):
         from ez2rc.v2.photos import review_question, _answers

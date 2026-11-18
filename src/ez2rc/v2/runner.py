@@ -371,7 +371,7 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             from .picture import IMAGE_NAME, write_picture
             count = write_picture(root.parent / IMAGE_NAME, draft)
             run['picture'] = {'path': '../' + IMAGE_NAME, 'pending_choices': count}
-            if observation_cache is None:
+            if count and observation_cache is None:
                 from .photos import photo_folder, write_photos
                 folder = photo_folder(draft)
                 try:
