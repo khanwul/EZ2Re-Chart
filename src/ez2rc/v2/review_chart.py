@@ -3,7 +3,8 @@ from fractions import Fraction
 from html import escape
 import math
 
-from .chart_layout import COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL, chart_columns, number_rail_width
+from .chart_layout import (COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL,
+                           chart_columns, fit_hold_columns, number_rail_width)
 from .contracts import read_ratio
 
 
@@ -27,6 +28,8 @@ def chart_view(draft):
         end = end if end is not None else start
         first = math.floor(start / span)
         last = math.ceil(end / span) - 1 if end > start else first
+        if first < last:
+            start, end, first, last = fit_hold_columns(start, end, first, last, lambda block: block * span)
         # Bound rendering of malformed or exceptionally long manual notes.
         if last - first > 256:
             missing.append(f'<li><a href="#note-{index}">{escape(note["id"])}</a> · Hold exceeds the display range</li>')
@@ -54,6 +57,7 @@ def chart_view(draft):
         ticks = [Fraction(i, 4) for i in range(math.ceil(base * 4), math.ceil((base + span) * 4))]
         if measure:
             ticks = sorted(set(ticks + [base + i*measure for i in range(COLUMN_MEASURES)]))
+        boundary_beats = {base, base + span}
         for beat in ticks:
             position = y(beat)
             bar = measure is not None and beat % measure == 0
@@ -61,6 +65,7 @@ def chart_view(draft):
             color = '#c3cddb' if bar else '#394558' if whole else '#2c3748'
             pieces.append(f'<path d="M{lane_left} {position:g}h{lanes*34}" stroke="{color}"/>')
             if bar:
+                boundary_beats.add(beat)
                 pieces.append(f'<path d="M{rail_left} {position:g}h{rail_width}" stroke="#c3cddb"/>'
                               f'<text x="{rail_left+rail_width/2:g}" y="{y(beat+measure/2):g}" dominant-baseline="middle" '
                               f'text-anchor="middle">{beat//measure+1}</text>')
@@ -73,13 +78,18 @@ def chart_view(draft):
             tail_y = y(min(end, base+span))
             uncertain = note['status'] == 'unresolved' or bool(note['issues'])
             color = '#ffc857' if uncertain else f'rgb{KEY_COLORS[note["lane"] % 2]}'
-            title = escape(f'Lane {note["lane"]+1} · {note["type"]} · Beat {float(start):g} · {note["id"]}')
+            recorded_start = read_ratio(note['start_beat'])
+            title = escape(f'Lane {note["lane"]+1} · {note["type"]} · Beat {float(recorded_start):g} · {note["id"]}')
             pieces.append(f'<a href="#note-{index}" class="chart-note" aria-label="{title}"><title>{title}</title>')
             if note['type'] == 'longnote' and end > start:
                 pieces.append(f'<rect x="{x+5}" y="{tail_y:g}" width="16" height="{head_y-tail_y:g}" fill="{color}" fill-opacity=".72"/>')
                 if base < end <= base+span:
-                    tail_height = min(3, head_y-tail_y)
-                    pieces.append(f'<rect x="{x}" y="{tail_y:g}" width="26" height="{tail_height:g}" fill="{color}"/>')
+                    if end in boundary_beats:
+                        pieces.append(f'<path d="M{x} {tail_y:g}h26" stroke="{color}" '
+                                      'vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>')
+                    else:
+                        tail_height = min(3, head_y-tail_y)
+                        pieces.append(f'<rect x="{x}" y="{tail_y:g}" width="26" height="{tail_height:g}" fill="{color}"/>')
             if base <= start < base+span:
                 head_height = min(3, head_y - (tail_y if end > start else top))
                 pieces.append(f'<rect x="{x}" y="{head_y-head_height:g}" width="26" height="{head_height:g}" fill="{color}"/>')
@@ -93,7 +103,8 @@ def chart_view(draft):
 #chart-panels{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding:8px;background:#06080b;color:#d0d6de}
 #chart-panels figure{flex:0 0 var(--chart-width,350px);margin:0}#chart-panels svg{width:100%;display:block;fill:currentColor}
 #chart-panels text{font:11px system-ui}#chart-panels figcaption{text-align:center;padding:8px}
-.chart-note:focus rect,.chart-note:hover rect{stroke:#ff668c;stroke-width:3}
+.chart-note:focus rect,.chart-note:hover rect{fill:#ff668c}
+.chart-note:focus path,.chart-note:hover path{stroke:#ff668c}
 tr:target{background:#fff0bf;outline:2px solid #d88a00}tr{scroll-margin-top:2rem}
 </style><section aria-label="Chart image"><h2>Chart preview</h2>
 <p>Read each column from bottom to top, then move right. Short bars mark taps and connected bars mark holds.

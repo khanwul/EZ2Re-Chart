@@ -13,7 +13,8 @@ import zlib
 import cv2
 import numpy as np
 
-from .chart_layout import COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL, chart_columns, number_rail_width
+from .chart_layout import (COLUMN_HEIGHT, COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL,
+                           chart_columns, fit_hold_columns, number_rail_width)
 from .contracts import read_ratio
 from .draft import change_note
 
@@ -142,7 +143,7 @@ def chart_strips(draft, items):
     if span <= 0:
         raise ValueError('invalid measure length')
     lane_width = 36
-    grid_top, grid_height = 32, 960
+    grid_top, grid_height = 32, COLUMN_HEIGHT
     grid_bottom = grid_top + grid_height
     bottom_start = draft['projection'].get('default_start_reference') == 'template_bottom'
     phase = Fraction(0) if bottom_start else _display_phase(draft)
@@ -170,8 +171,10 @@ def chart_strips(draft, items):
             display_start = displayed(start)
             if end is None or display_start < end:
                 start = display_start
-        first = (start if start is not None else end) // span
+        first = start // span if start is not None else math.ceil(end / span) - 1
         last = math.ceil(end / span) - 1 if start is not None and end is not None else first
+        if first < last:
+            start, end, first, last = fit_hold_columns(start, end, first, last, lambda block: block * span)
         # Distant endpoints of a manually entered hold need no intervening empty panels.
         indices = range(first, last + 1) if last - first < 256 else (first, last)
         for block in indices:
@@ -240,7 +243,7 @@ def chart_strips(draft, items):
                 label(strip, str(lane+1), x+12, grid_top-10, size=.48)
 
             # Keep guides for occupied subdivisions between quarter-beat lines.
-            subdivisions = {p for _, start, end, _, _ in blocks[block] for p in (start, end)
+            subdivisions = {p for _, start, end, *_ in blocks[block] for p in (start, end)
                             if p is not None and base <= p < base+span and p.denominator in (3,6,8,12,16)}
             for point in subdivisions:
                 cv2.line(strip, (left, y(point)), (right-1, y(point)), (73, 83, 96))
@@ -257,10 +260,12 @@ def chart_strips(draft, items):
                     cv2.line(strip, (left, row), (right-1, row), color)
             major = measure or Fraction(4)
             rail = strip[:, left-rail_width:left]
+            boundary_rows = {grid_top, grid_bottom}
             cv2.rectangle(rail, (0, grid_top), (rail_width-1, grid_bottom), MEASURE_RAIL, -1)
             for index in range(COLUMN_MEASURES):
                 beat = base + index*major
                 position = y(beat)
+                boundary_rows.add(position)
                 caption = str(beat//major+1) if measure else str(beat)
                 label_y = (position + y(beat + major)) // 2 if measure else position - 9
                 (w, h), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)
@@ -280,14 +285,21 @@ def chart_strips(draft, items):
                     color = (106, 226, 208) if alternative else (255, 199, 86)
                 if start is not None and end is not None:
                     body = tuple(round(channel * .72) for channel in color)
-                    cv2.rectangle(strip, (x+5, top), (x+lane_width-8, bottom), body,
-                                  1 if alternative else -1)
+                    if alternative:
+                        # An outlined continuation has no end cap at the column break.
+                        for side in (x+5, x+lane_width-8):
+                            cv2.line(strip, (side, top), (side, bottom), body)
+                    else:
+                        cv2.rectangle(strip, (x+5, top), (x+lane_width-8, bottom), body, -1)
                 for point, is_tail in ((start, False), (end, True)):
-                    if point is not None and base <= point <= base+span:
+                    if point is None:
+                        continue
+                    in_column = base < point <= base+span if is_tail else base <= point < base+span
+                    if in_column:
                         position = y(point)
                         # Paint caps inward so a short hold ends at its observed row.
                         cap_top = position if is_tail else max(top, position-3)
-                        cap_bottom = min(bottom, position+3) if is_tail else position
+                        cap_bottom = min(bottom, position+3) if is_tail and position not in boundary_rows else position
                         cv2.rectangle(strip, (x, cap_top), (x+lane_width-3, cap_bottom),
                                       color, 1 if alternative else -1)
                         if tag:

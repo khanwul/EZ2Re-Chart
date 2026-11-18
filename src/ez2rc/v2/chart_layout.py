@@ -1,9 +1,23 @@
 """Column order and RGB colors used by both draft chart renderers."""
 
 COLUMN_MEASURES = 4
+COLUMN_HEIGHT = 960
 LANE_FILLS = ((13, 15, 19), (23, 26, 32))
 KEY_COLORS = ((232, 238, 247), (42, 145, 255))
 MEASURE_RAIL = (78, 83, 92)
+
+
+def fit_hold_columns(start, end, first, last, column_start):
+    """Put a segment that rounds to zero rows at a seam with the rest of its hold."""
+    if first < last:
+        edge = column_start(first + 1)
+        if 2 * COLUMN_HEIGHT * (edge - start) <= edge - column_start(first):
+            start, first = edge, first + 1
+    if first < last:
+        edge = column_start(last)
+        if 2 * COLUMN_HEIGHT * (end - edge) <= column_start(last + 1) - edge:
+            end, last = edge, last - 1
+    return start, end, first, last
 
 
 def number_rail_width(blocks, measure):

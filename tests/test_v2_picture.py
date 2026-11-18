@@ -152,6 +152,34 @@ class PictureTest(unittest.TestCase):
             np.testing.assert_array_equal(score[bar,44], score[bar,85])
             np.testing.assert_array_equal(score[bar+1,44], (232,238,247))
 
+    def test_boundary_heads_extend_inward_and_tails_stay_on_the_line(self):
+        def render(start, end):
+            notes = [{'id': 'hold', 'type': 'longnote', 'lane': 0, 'start_beat': start, 'end_beat': end},
+                     {'id': 'tap', 'lane': 1, 'start_beat': [18, 1], 'end_beat': None}]
+            draft = {'metadata': {'lane_count': 2}, 'bpm': '120', 'notes': notes,
+                     'projection': {'measure_beats': [4, 1]}}
+            _, score = chart_strips(draft, {})
+            return score
+
+        # A cap-only pixel at the left edge of the lane excludes the narrower body.
+        for start, end, first_rows, second_rows in (
+            ([4, 1], [8, 1], [512, 749, 750, 751, 752], []),
+            ([12, 1], [16, 1], [32, 269, 270, 271, 272], []),
+            ([16, 1], [20, 1], [], [752, 989, 990, 991, 992]),
+            (None, [16, 1], [32], []),
+            ([16, 1], None, [], [989, 990, 991, 992]),
+        ):
+            with self.subTest(start=start, end=end):
+                score = render(start, end)
+                for x, expected in ((19, first_rows), (116, second_rows)):
+                    rows = np.flatnonzero((score[:, x] == (232, 238, 247)).all(axis=1))
+                    np.testing.assert_array_equal(rows, expected)
+
+        # A sliver rounding to zero pixels must not leave even a body-colored line.
+        np.testing.assert_array_equal(render([15999, 1000], [17, 1]), render([16, 1], [17, 1]))
+        np.testing.assert_array_equal(render([15, 1], [16001, 1000]), render([15, 1], [16, 1]))
+        self.assertFalse(np.array_equal(render([15, 1], [1601, 100]), render([15, 1], [16, 1])))
+
     def test_hold_outline_opens_toward_body(self):
         from ez2rc.v2.witness_box import OUTLINE_DARK, OUTLINE_PINK, draw_outline
         for kind in ('tap', 'head', 'tail'):

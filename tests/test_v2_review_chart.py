@@ -64,6 +64,23 @@ class ReviewChartTest(unittest.TestCase):
         self.assertIn('Start beat needs review', html)
         self.assertIn('href="#note-0"', html)
 
+    def test_hold_on_a_seam_keeps_its_head_thickness_in_its_own_column(self):
+        for start, end, owner, head_y, tail_y in (([15999, 1000], [20, 1], 1, 574, 439),
+                                                  ([12, 1], [16001, 1000], 0, 169, 34)):
+            with self.subTest(start=start, end=end):
+                html = chart_view(draft([note('hold', start, end), note('later', [18, 1], lane=1)], [4, 1]))
+                root = ElementTree.fromstring(html[html.index('<div id="chart-panels">'):html.index('<h3>')])
+                panels = root.findall('.//svg')
+                self.assertIsNone(panels[1-owner].find('a[@href="#note-0"]'))
+                hold = panels[owner].find('a[@href="#note-0"]')
+                head = hold.find('rect[@width="26"]')
+                tap = panels[1].find('a[@href="#note-1"]/rect')
+                self.assertEqual(head.get('height'), tap.get('height'))
+                self.assertEqual(float(head.get('y')) + float(head.get('height')), head_y)
+                caps = hold.findall('path[@vector-effect="non-scaling-stroke"]')
+                self.assertEqual(len(caps), 1)
+                self.assertIn(f' {tail_y}h', caps[0].get('d'))
+
     def test_negative_fractional_beats_and_untrusted_ids(self):
         html = chart_view(draft([note('<img src=x onerror=alert(1)>', [-1, 2])]))
         self.assertIn('-16–0 beats', html)
