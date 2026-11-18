@@ -56,6 +56,23 @@ class BarlineGridTest(unittest.TestCase):
         self.assertEqual([a['measure_index'] for a in result['hypotheses'][0]['assignments']],[0,2])
         self.assertEqual(result['hypotheses'][0]['missing_measure_indices'],[1])
 
+    def test_split_outside_crossing_does_not_erase_the_clean_segment(self):
+        for frame, expected in ((58, [0, 1, 2]), (63, [0, 2]), (68, [0, 1, 2])):
+            with self.subTest(frame=frame):
+                obs, mov, clock = recording(chunk_size=132)
+                chunk, = obs.chunks()
+                row = 4 * (frame - 55)
+                chunk['projection'][frame, :, row + 3] = 72
+                with patch('ez2rc.v2.barline_grid.timeline', return_value=clock):
+                    grid = infer_barline_grid(obs, mov, '120', F(1))
+                self.assertEqual(grid['status'], 'supported')
+                assignments = grid['hypotheses'][0]['assignments']
+                self.assertEqual([a['measure_index'] for a in assignments], expected)
+                if 1 in expected:
+                    track = next(t for t in grid['tracks'] if t['id'] == assignments[1]['marker_id'])
+                    self.assertTrue(track['association_conflict'])
+                    self.assertNotIn(frame, [r['frame_id'] for r in track['observations']])
+
     def test_clipped_leading_coverage_does_not_establish_first_line(self):
         result=infer(start=9)
         self.assertEqual(result['status'],'ambiguous')

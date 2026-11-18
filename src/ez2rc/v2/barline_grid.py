@@ -13,7 +13,7 @@ from .contracts import decimal_bpm, exact_ms, ratio, read_ratio
 from .motion import STATUS, timeline
 from .reference import phase_candidates
 
-VERSION = 'first-barline-grid-2'
+VERSION = 'first-barline-grid-3'
 
 
 def reconcile_cycles(hypotheses, marker_ids, measure):
@@ -128,6 +128,12 @@ def number_barlines(markers, period, measure):
     return phase,hypotheses
 
 
+def _unbranched_rows(track):
+    # A branch ends the track. Its uncontested interior can still contain an
+    # entire crossing, without assigning either side of the disputed link.
+    return [row for row in track['observations'] if not row.get('association_conflict')]
+
+
 def infer_barline_grid(observations, movement, bpm, measure_beats):
     result = {'format':'ez2rc.barline-grid','schema_version':1,'algorithm_version':VERSION,
               'observation_cache_id':observations.id,'motion_cache_id':movement.id,
@@ -186,7 +192,9 @@ def infer_barline_grid(observations, movement, bpm, measure_beats):
                     track = {'id':f'barline:{len(result["tracks"])}','observations':[],'association_conflict':bool(matches)}
                     result['tracks'].append(track)
                     for a in matches:
+                        row['association_conflict'] = True
                         previous[a]['association_conflict'] = True
+                        previous[a]['observations'][-1]['association_conflict'] = True
                 track['observations'].append(row)
                 current.append(track)
             previous,previous_frame = current,frame
@@ -194,14 +202,17 @@ def infer_barline_grid(observations, movement, bpm, measure_beats):
         raise ValueError('barline frame coverage differs from motion')
     markers = []
     for track in result['tracks']:
-        rows = track['observations']
+        rows = _unbranched_rows(track)
+        if not rows:
+            track['reasons'] = ['association_conflict', 'crossing_not_unique_or_unobserved']
+            continue
         below = [i for i,r in enumerate(rows) if r['visible_range_px'][1] < center]
         above = [i for i,r in enumerate(rows) if r['visible_range_px'][0] > center]
         crossing = [(rows[max(below)],rows[min(above)])] if below and above and max(below)<min(above) else []
         moving = max(r['y_px'] for r in rows)-min(r['y_px'] for r in rows)>width
         track['reasons'] = ([] if moving else ['no_supported_motion'])
         if len(crossing)!=1: track['reasons'].append('crossing_not_unique_or_unobserved')
-        if track['association_conflict']: track['reasons'].append('association_conflict')
+        if not crossing and track['association_conflict']: track['reasons'].append('association_conflict')
         if not track['reasons']:
             a,b = crossing[0]
             markers.append({'id':track['id'],'timestamp_interval_ms':[a['timestamp_ms'],b['timestamp_ms']]})
@@ -209,7 +220,7 @@ def infer_barline_grid(observations, movement, bpm, measure_beats):
     tracks = {t['id']:t for t in result['tracks']}
     contiguous = bool(all_ids) and all_ids == list(range(all_ids[0],all_ids[-1]+1))
     for hypothesis in hypotheses:
-        first = tracks[hypothesis['first_marker_id']]['observations'][0]
+        first = _unbranched_rows(tracks[hypothesis['first_marker_id']])[0]
         index = clock_index[first['frame_id']]
         dt = float(clock['timestamp_ms'][index]-clock['timestamp_ms'][index-1]) if index else 0.
         leading = (contiguous and all_ids[0]==0 and index>0 and first['frame_id']==first_detection
@@ -236,7 +247,7 @@ def spatial_reference(result, calibration):
     anchors, support = [], {}
     for assignment in result['hypotheses'][0]['assignments']:
         identity = assignment['marker_id']
-        rows = tracks[identity]['observations']
+        rows = _unbranched_rows(tracks[identity])
         q = rows[0]['q_px']
         anchors.append({'id':identity,'beat':assignment['beat'],'q_px':q,'q_range_px':[q,q]})
         support[identity] = [{'frame_id':r['frame_id'],'y_px':r['y_px']} for r in rows]
