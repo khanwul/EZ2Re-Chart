@@ -42,6 +42,28 @@ class PictureTest(unittest.TestCase):
             self.assertFalse(cap[row+1])
         self.assertTrue(cap[lines[17]+1:lines[16]].any())
 
+    def test_systematic_capture_offset_aligns_auto_notes_but_keeps_manual_beats(self):
+        from fractions import Fraction
+        def note(name, beat, origin='automatic', end=None):
+            return {'id':name, 'origin':origin, 'lane':0, 'start_beat':list(beat.as_integer_ratio()),
+                    'end_beat':list(end.as_integer_ratio()) if end is not None else None}
+        phase = Fraction(1, 27)
+        automatic = [note(str(i), Fraction(i)+phase) for i in range(8)]
+        automatic.append(note('hold', 8+phase+Fraction(1,1000), end=9+phase+Fraction(1,2)))
+        manual = note('manual', 10+phase, 'user_edit')
+        draft = {'metadata':{'lane_count':2}, 'bpm':'120', 'projection':{'measure_beats':[4,1]},
+                 'notes':[*automatic, manual], 'automatic':{'notes':automatic}}
+        _, score = chart_strips(draft, {})
+        cap = (score[:,44] == (232,238,247)).all(axis=1)
+        grid = score[:,85]
+        def on_line(color):
+            return np.flatnonzero((grid == color).all(axis=1) & cap & ~np.roll(cap,-1))
+        self.assertEqual(len(on_line((158,168,180))), 3)  # beats 0, 4, 8
+        self.assertEqual(len(on_line((106,118,133))), 6)
+        self.assertEqual(len(on_line((73,83,96))), 1)     # hold tail at 9.5
+        self.assertTrue(cap[880-round(53*(10+phase))])
+        self.assertFalse(cap[880-53*10])
+
     def test_score_reads_up_then_right_and_hold_continues_after_column_break(self):
         def note(lane, start, end=None):
             return {'id': str(start), 'lane': lane, 'start_beat': [start,1],

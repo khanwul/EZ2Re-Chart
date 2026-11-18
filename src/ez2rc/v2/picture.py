@@ -3,6 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from statistics import median
 import math
 import os
 import struct
@@ -114,6 +115,24 @@ def label(canvas, text, x, y, color=(35, 43, 55), size=.48):
     cv2.putText(canvas, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, 1, cv2.LINE_AA)
 
 
+def _display_phase(draft):
+    """Estimate a small shared offset from independent occupied quarter-beat slots."""
+    slots = defaultdict(list)
+    for note in draft.get('automatic', {}).get('notes', ()):
+        if note['start_beat'] is not None:
+            beat = read_ratio(note['start_beat'])
+            slot = round(beat * 4)
+            slots[slot].append(beat - Fraction(slot, 4))
+    if len(slots) < 8:
+        return Fraction(0)
+    residuals = [median(values) for values in slots.values()]
+    phase = median(residuals)
+    agreeing = sum(abs(value - phase) <= Fraction(1, 96) for value in residuals)
+    if abs(phase) <= Fraction(1, 16) and agreeing * 3 >= len(slots) * 2:
+        return phase
+    return Fraction(0)
+
+
 def chart_strips(draft, items):
     lanes = draft['metadata']['lane_count']
     measure = draft['projection'].get('measure_beats')
@@ -124,15 +143,37 @@ def chart_strips(draft, items):
     lane_width = 28
     panel = 50 + lanes * lane_width
     grid_top, grid_bottom = 32, 880
+    phase = _display_phase(draft)
+    tolerance = min(span / (grid_bottom-grid_top), Fraction(1, 96))
+
+    def displayed(beat):
+        corrected = beat - phase
+        # Include straight and triplet subdivisions. Only absorb residual
+        # jitter if the correction is at most one displayed pixel.
+        for division in (1, 2, 3, 4, 6, 8, 12, 16):
+            tick = Fraction(round(corrected * division), division)
+            if abs(tick - corrected) <= tolerance:
+                return tick
+        return corrected
+
     blocks = defaultdict(list)
-    def place(note, tag='', alternative=False):
+    def place(note, tag='', alternative=False, grid_choice=False):
+        automatic = (note.get('origin') == 'automatic' and note.get('status') != 'reviewed'
+                     and not grid_choice)
         if note['start_beat'] is None:
             if note['end_beat'] is not None:
                 end = read_ratio(note['end_beat'])
+                if automatic:
+                    end = displayed(end)
                 blocks[end // span].append((note['lane'], end, end, tag, alternative))
             return
         start = read_ratio(note['start_beat'])
         end = read_ratio(note['end_beat']) if note['end_beat'] is not None else start
+        if automatic:
+            first_tick, last_tick = displayed(start), displayed(end)
+            if end > start and last_tick <= first_tick:
+                first_tick, last_tick = start-phase, end-phase
+            start, end = first_tick, last_tick
         first, last = start // span, end // span
         # Distant endpoints of a manually entered hold need no intervening empty panels.
         indices = range(first, last + 1) if last - first < 256 else (first, last)
@@ -145,7 +186,7 @@ def chart_strips(draft, items):
     for number, item in items.items():
         for letter, other in item.options.items():
             if letter != 'A':
-                place(other, f'{number}{letter}', True)
+                place(other, f'{number}{letter}', True, grid_choice=other['id'] == item.note['id'])
 
     # Keep rests in the score, including the lead-in from beat zero. Extremely
     # distant manually entered beats get an explicitly labelled jump instead.
@@ -169,6 +210,8 @@ def chart_strips(draft, items):
           14, 28, size=.7)
     label(header, 'Read upwards, then move right.   M = measure' if measure else
           'Read upwards, then move right.   Scale: beats', 14, 54)
+    if phase:
+        label(header, f'Auto-note display shift: {float(-phase):+.4f} beat', 370, 54)
     yield header
 
     for offset in range(0, len(ordered), cols):
@@ -187,6 +230,12 @@ def chart_strips(draft, items):
                 cv2.rectangle(strip, (x, grid_top), (x+lane_width-1, grid_bottom), shade, -1)
                 label(strip, str(lane+1), x+8, grid_top-10, size=.4)
 
+            # Show a quieter guide at occupied subdivisions. Major lines win
+            # if a nearby subdivision rounds to the same pixel.
+            subdivisions = {p for _, start, end, _, _ in blocks[block] for p in (start, end)
+                            if base <= p < base+span and p.denominator in (2,3,4,6,8,12,16)}
+            for point in subdivisions:
+                cv2.line(strip, (left, y(point)), (right-1, y(point)), (73, 83, 96))
             # Once beats fall less than a pixel apart, successive projected
             # rows touch or coincide. Paint their union without iterating an
             # arbitrarily large user-supplied measure length.

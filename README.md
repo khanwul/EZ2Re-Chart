@@ -104,7 +104,10 @@ Read each column from bottom to top, then move right. Each column spans four
 measures when the measure length is known, or sixteen beats otherwise. Short
 bars mark taps and filled strips mark holds. Thin solid lines mark each beat,
 with brighter lines at measure boundaries. Read the beat at the bottom edge
-of each tap or hold endpoint.
+of each tap or hold endpoint. Fainter lines mark occupied subdivisions. If
+automatic notes consistently fall slightly ahead of or behind the grid, the
+PNG header reports the display shift. Manual positions and the saved draft
+retain their original timing.
 Numbers identify notes to check. A is the current note, and other letters show
 competing note interpretations or a pair of possible beat positions found during extraction.
 The key beneath the chart lists the lane and beat for each choice. A question
