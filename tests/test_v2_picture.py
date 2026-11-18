@@ -16,6 +16,21 @@ from test_v2_barline_pipeline import marked_video
 
 
 class PictureTest(unittest.TestCase):
+    def test_long_five_lane_chart_wraps_with_twenty_pixels_per_quarter_beat(self):
+        # The first eight columns fill one row. Beat 129 belongs in the next row.
+        draft = {'metadata': {'lane_count': 5}, 'bpm': '120',
+                 'projection': {'measure_beats': [4, 1]},
+                 'notes': [{'id': 'tap', 'lane': 0, 'start_beat': [129, 1], 'end_beat': None}]}
+        _, first_row, next_row = chart_strips(draft, {})
+        self.assertLessEqual(first_row.shape[1], 1920)
+        self.assertEqual(first_row.shape, next_row.shape)
+        grid = next_row[:, 85]
+        bars = np.flatnonzero((grid == (158, 168, 180)).all(axis=1))
+        start = bars[-1]
+        for offset in (20, 40, 60):
+            np.testing.assert_array_equal(grid[start - offset], (73, 83, 96))
+        np.testing.assert_array_equal(next_row[start - 80, 44], (232, 238, 247))
+
     def test_every_beat_has_a_line_touching_the_bottom_of_on_beat_notes(self):
         # A 48-beat column used to skip alternate beats.
         notes = [
@@ -66,11 +81,14 @@ class PictureTest(unittest.TestCase):
             return np.flatnonzero((grid == color).all(axis=1) & cap & ~np.roll(cap,-1))
         self.assertEqual(len(on_line((158,168,180))), 3)  # beats 0, 4, 8
         self.assertEqual(len(on_line((106,118,133))), 6)
-        tail_row = 880-round(53*(9+phase+Fraction(1,2)))
+        bars = np.flatnonzero((grid == (158,168,180)).all(axis=1))
+        zero = int(bars[-1])
+        pixels_per_beat = Fraction(zero - int(bars[-2]), 4)
+        tail_row = zero-round(pixels_per_beat*(9+phase+Fraction(1,2)))
         self.assertTrue(cap[tail_row])
         self.assertFalse(cap[tail_row-1])
-        self.assertTrue(cap[880-round(53*(10+phase))])
-        self.assertFalse(cap[880-53*10])
+        self.assertTrue(cap[zero-round(pixels_per_beat*(10+phase))])
+        self.assertFalse(cap[zero-round(pixels_per_beat*10)])
 
     def test_observed_tail_before_measure_preserves_a_visible_gap(self):
         # At this scale the off-grid tail is one raster row below the line.
@@ -81,7 +99,8 @@ class PictureTest(unittest.TestCase):
             draft = {'metadata':{'lane_count':2}, 'bpm':'120', 'notes':[note],
                      'projection':{'measure_beats':[4,1], 'default_start_reference':'template_bottom'}}
             _, score = chart_strips(draft, {})
-            bar = 880 - 53*4
+            bars = np.flatnonzero((score[:,85] == (158,168,180)).all(axis=1))
+            bar = bars[-2]  # Beat 4, counting up from the bottom.
             np.testing.assert_array_equal(score[bar,44], score[bar,85])
             np.testing.assert_array_equal(score[bar+1,44], (232,238,247))
 

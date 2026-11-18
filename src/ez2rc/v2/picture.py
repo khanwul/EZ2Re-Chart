@@ -140,12 +140,13 @@ def chart_strips(draft, items):
     span = measure * 4 if measure is not None else Fraction(16)
     if span <= 0:
         raise ValueError('invalid measure length')
-    lane_width = 28
+    lane_width = 36
     panel = 50 + lanes * lane_width
-    grid_top, grid_bottom = 32, 880
+    grid_top, grid_height = 32, 1280
+    grid_bottom = grid_top + grid_height
     bottom_start = draft['projection'].get('default_start_reference') == 'template_bottom'
     phase = Fraction(0) if bottom_start else _display_phase(draft)
-    tolerance = min(span / (grid_bottom-grid_top), Fraction(1, 96))
+    tolerance = min(span / grid_height, Fraction(1, 96))
 
     def displayed(beat):
         corrected = beat - phase
@@ -195,7 +196,7 @@ def chart_strips(draft, items):
             ordered.append(block)
         previous = block
 
-    cols = max(1, min(32, len(ordered), max(1, 12000 // panel)))
+    cols = max(1, min(len(ordered), (1920 - 14) // panel))
     width = max(720, cols * panel + 14)
 
     def blank(height):
@@ -218,13 +219,13 @@ def chart_strips(draft, items):
             right = left + lanes * lane_width
 
             def y(beat):
-                return grid_bottom - round((grid_bottom-grid_top) * (beat-base)/span)
+                return grid_bottom - round(grid_height * (beat-base)/span)
 
             for lane in range(lanes):
                 x = left + lane * lane_width
                 shade = (27, 32, 40) if lane % 2 == 0 else (37, 44, 54)
                 cv2.rectangle(strip, (x, grid_top), (x+lane_width-1, grid_bottom), shade, -1)
-                label(strip, str(lane+1), x+8, grid_top-10, size=.4)
+                label(strip, str(lane+1), x+12, grid_top-10, size=.48)
 
             # Keep guides for occupied subdivisions between quarter-beat lines.
             subdivisions = {p for _, start, end, _, _ in blocks[block] for p in (start, end)
@@ -235,7 +236,7 @@ def chart_strips(draft, items):
             for division, color in ((4, (73, 83, 96)), (1, (106, 118, 133))):
                 first = math.ceil(base * division)
                 stop = math.ceil((base + span) * division)
-                if span * division > grid_bottom - grid_top:
+                if span * division > grid_height:
                     # Subpixel ticks cover consecutive rows even for very long measures.
                     rows = range(y(Fraction(stop - 1, division)), y(Fraction(first, division)) + 1)
                 else:
@@ -267,8 +268,8 @@ def chart_strips(draft, items):
                     if point is not None and base <= point <= base+span:
                         position = y(point)
                         # Paint caps inward so a short hold ends at its observed row.
-                        cap_top = position if is_tail else max(top, position-4)
-                        cap_bottom = min(bottom, position+4) if is_tail else position
+                        cap_top = position if is_tail else max(top, position-6)
+                        cap_bottom = min(bottom, position+6) if is_tail else position
                         cv2.rectangle(strip, (x, cap_top), (x+lane_width-3, cap_bottom),
                                       color, 1 if alternative else -1)
                         if tag:
@@ -276,7 +277,7 @@ def chart_strips(draft, items):
             for (x, position), tags in markers.items():
                 numbers = dict.fromkeys(tag.rstrip('ABCDEFGHIJKLMNOPQRSTUVWXYZ') for tag in tags)
                 caption = tags[0] if len(tags) == 1 else '/'.join(numbers)
-                label(strip, caption, x, position-6, (255, 233, 150), .4)
+                label(strip, caption, x, position-8, (255, 233, 150), .48)
         yield strip
 
     for item in items.values():

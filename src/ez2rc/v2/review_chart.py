@@ -76,7 +76,7 @@ def chart_view(draft):
     return ('''<style>
 .chart-controls{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin:1rem 0}
 #chart-panels{display:flex;gap:16px;overflow-x:auto;align-items:flex-start;padding:8px;background:#e9edf3}
-#chart-panels figure{flex:0 0 var(--chart-width,250px);margin:0}#chart-panels svg{width:100%;display:block;background:#f9fbff}
+#chart-panels figure{flex:0 0 var(--chart-width,350px);margin:0}#chart-panels svg{width:100%;display:block;background:#f9fbff}
 #chart-panels text{font:11px system-ui}#chart-panels figcaption{text-align:center;padding:8px}
 .chart-note:focus rect,.chart-note:hover rect{stroke:#ff668c;stroke-width:3}
 tr:target{background:#fff0bf;outline:2px solid #d88a00}tr{scroll-margin-top:2rem}
@@ -87,7 +87,7 @@ Select a note to see its details below. Yellow notes with a question mark need r
            '<p>The measure length is unknown, so the chart shows beat ticks.</p>')
         + '<p>The chart shows the selected draft notes. The table below includes alternative candidates. '
           'Draft positions are estimates. Empty regions may contain undetected notes. Empty columns are omitted.</p>'
-        + '<div class="chart-controls"><label>Zoom <input id="chart-zoom" type="range" min="180" max="500" value="250"></label></div>'
+        + '<div class="chart-controls"><label>Zoom <input id="chart-zoom" type="range" min="180" max="500" value="350"></label></div>'
         + '<div id="chart-panels">' + (''.join(panels) or '<p>No beat positions to display.</p>') + '</div>'
         + '<h3>Notes outside the chart</h3><ul>' + (''.join(missing) or '<li>None</li>') + '</ul></section>'
         + '<script>document.getElementById("chart-zoom").addEventListener("input",e=>{document.getElementById("chart-panels").style.setProperty("--chart-width",e.target.value+"px");});</script>')
