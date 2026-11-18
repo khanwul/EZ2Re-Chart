@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 from fractions import Fraction
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 import uuid
 
 from .contracts import Metadata, decimal_bpm, read_ratio, ratio
+from .rhythm import DRAFT_GRID
 from .storage import digest, read_json, write_json
 
 
@@ -137,10 +139,37 @@ def save_draft(path, value, *, expected_sha=None, picture_path=None):
                     raise OSError('Your choice was saved. Run ez2rc chart to refresh the image.') from exc
 
 
+def beat_text(value):
+    if value is None:
+        return '?'
+    beat = read_ratio(value)
+    if beat > 1 and beat.denominator != 1:
+        whole, remainder = divmod(beat.numerator, beat.denominator)
+        return f'{whole} + {remainder}/{beat.denominator}'
+    return str(beat)
+
+
+def start_choices(note):
+    """Return the measured grid alternatives for an unplaced start."""
+    if note['start_beat'] is not None:
+        return []
+    ticks = (note.get('evidence', {}).get('start') or {}).get('candidate_ticks', ())
+    resolution = DRAFT_GRID.ticks_per_beat
+    end = read_ratio(note['end_beat']) * resolution if note['end_beat'] is not None else None
+    return [ratio(Fraction(tick, resolution)) for tick in ticks if end is None or tick < end]
+
+
+def start_text(note):
+    return ' or '.join(map(beat_text, start_choices(note))) or beat_text(note['start_beat'])
+
+
 def parse_beat(text):
     if text == 'none':
         return None
     try:
+        mixed = re.fullmatch(r'(\d+)\s*\+\s*(\d+/\d+)', text.strip())
+        if mixed:
+            return ratio(int(mixed[1]) + Fraction(mixed[2]))
         return ratio(Fraction(text))
     except (ValueError, ZeroDivisionError) as exc:
         raise ValueError('beat must be a number, a fraction such as 3/8, or none') from exc
@@ -173,6 +202,9 @@ def change_note(value, action, *, identity=None, fields=None, confirm=False):
         if set(fields) - {'lane', 'type', 'start_beat', 'end_beat'}:
             raise ValueError('unsupported note fields')
         after.update(fields)
+        if fields.get('start_beat') is not None:
+            after['issues'] = [issue for issue in after['issues']
+                               if issue not in ('start_grid_ambiguous', 'start_grid_no_candidate')]
         if after['origin'] == 'automatic':
             after['origin'] = 'user_edit'
         missing = after['start_beat'] is None or after['type'] == 'longnote' and after['end_beat'] is None
@@ -204,11 +236,9 @@ def describe(value, *, identity=None, unresolved=False, limit=20):
             raise ValueError('unknown note or alternative ID')
     elif unresolved:
         rows = [r for r in rows if r['status'] == 'unresolved']
-    def beat(v):
-        return str(read_ratio(v)) if v is not None else '?'
     for row in rows[:limit]:
         print(f"{row['id']}  lane {row['lane']+1}  {row['type']}  "
-              f"{beat(row['start_beat'])} -> {beat(row['end_beat'])}  {row['status']}")
+              f"{start_text(row)} -> {beat_text(row['end_beat'])}  {row['status']}")
         if row['issues']:
             print('  ' + ', '.join(row['issues']))
         if identity is not None:

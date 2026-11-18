@@ -18,6 +18,21 @@ from test_v2_barline_pipeline import marked_video
 
 
 class PictureTest(unittest.TestCase):
+    def test_png_labels_close_fractional_starts_and_shows_a_chord_beat_once(self):
+        from unittest.mock import patch
+        from ez2rc.v2.picture import label
+
+        rows = [{'id': str(lane), 'lane': lane, 'type': 'tap', 'end_beat': None,
+                 'start_beat': start} for lane, start in enumerate(([65, 64], [49, 48], [65, 64]))]
+        draft = {'metadata': {'lane_count': 3}, 'bpm': '120', 'notes': rows,
+                 'projection': {'start_ticks_per_beat': 192, 'default_start_reference': 'template_bottom',
+                                'measure_beats': [4, 1]}}
+        with patch('ez2rc.v2.picture.label', wraps=label) as draw:
+            list(chart_strips(draft, {}))
+        positions = [(c.args[1], c.args[2]) for c in draw.call_args_list if ' + ' in c.args[1]]
+        self.assertEqual([label for label, _ in positions], ['1 + 1/48', '1 + 1/64'])
+        self.assertNotEqual(positions[0][1], positions[1][1])
+
     def test_measure_numbers_fit_the_rail_without_prefixes(self):
         from unittest.mock import patch
         from ez2rc.v2.picture import label
@@ -219,6 +234,9 @@ class PictureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             song = marked_video(root, bar_entries=(6, 26, 41, 61, 81, 101))
+            # The procedural video places every template and line on an exact integer row.
+            profile = root / 'profile.toml'
+            profile.write_text('draft_localization_error_px = 0\n' + profile.read_text())
             song.write_text(song.read_text().replace('bpm = "150"', 'bpm = "600"')
                             .replace('measure_beats = [1, 1]', 'measure_beats = [4, 1]'))
             for command in ('extract', 'reconstruct'):
@@ -241,10 +259,12 @@ class PictureTest(unittest.TestCase):
                 self.assertEqual([a['beat'] for a in assignments], expected)
                 draft = read_draft(result/'.ez2rc/draft.json')
                 self.assertEqual(draft['projection']['barline_beats'], expected)
+                self.assertEqual(draft['projection']['start_ticks_per_beat'], 192)
                 # The last tap in lane 2 coincides with the sixth observed line.
                 last = max((n for n in draft['notes'] if n['lane'] == 1),
                            key=lambda n: Fraction(*n['start_beat']))
                 bounds = last['evidence']['start']['beat_range']
+                self.assertEqual(last['start_beat'], [19, 1])
                 self.assertLessEqual(Fraction(*bounds['lower']), 19)
                 self.assertGreaterEqual(Fraction(*bounds['upper']), 19)
                 self.assertFalse(list(result.glob('*-photos-r*')))

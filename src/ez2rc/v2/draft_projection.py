@@ -1,9 +1,6 @@
-"""Editable screen estimates using the existing shared observation geometry.
-
-No musical grid is imposed on screen endpoints. The midpoint of a conditional
-coordinate range is labeled as an estimate and the full range is retained.
-"""
+"""Project screen measurements into editable note starts and observed hold ends."""
 from collections import defaultdict
+from fractions import Fraction
 
 from .barline_grid import spatial_reference
 from .contracts import exact_ms, ratio, read_ratio
@@ -11,9 +8,29 @@ from .decode import KINDS, lanes
 from .motion import STATUS, timeline
 from .observation import template_shapes
 from .relative_beats import project_relative_beats
+from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-6'
+VERSION = 'screen-coordinate-draft-7'
+
+
+def apply_start_grid(note):
+    """Retain the optical estimate and adopt a start only when one grid tick fits."""
+    point = note['evidence']['start']
+    if not point or point['beat_range'] is None:
+        return
+    ticks = sorted(grid_candidate_ticks(point['beat_range'], DRAFT_GRID))
+    resolution = DRAFT_GRID.ticks_per_beat
+    if note['end_beat'] is not None:
+        end_tick = read_ratio(note['end_beat']) * resolution
+        ticks = [tick for tick in ticks if tick < end_tick]
+    point['candidate_ticks'] = ticks
+    if len(ticks) == 1:
+        note['start_beat'] = ratio(Fraction(ticks[0], resolution))
+    else:
+        note['start_beat'] = None
+        note['status'] = 'unresolved'
+        note['issues'].append('start_grid_ambiguous' if ticks else 'start_grid_no_candidate')
 
 
 def draft_timing_issues(draft):
@@ -162,6 +179,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                'start_beat': values['start'], 'end_beat': values['end'],
                'status': 'unresolved' if reasons else 'draft', 'issues': sorted(set(reasons)),
                'evidence': evidence, 'origin': 'automatic'}
+        apply_start_grid(row)
         (notes if candidate['selected'] else alternatives).append(row)
     gaps, current = [], None
     for fid, ms, state in zip(clock['frame_id'], clock['timestamp_ms'], clock['status']):
@@ -176,6 +194,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     scale = geometry.get('scale_bounds_px_per_beat')
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
             'default_start_reference': 'template_bottom',
+            'start_ticks_per_beat': DRAFT_GRID.ticks_per_beat,
             'measure_beats': reference['measure_beats'] if reference is not None else None,
             **({'barline_beats': barlines['barline_beats'] if reference else [],
                 'unplaced_marker_ids': barlines['unplaced_marker_ids'],
@@ -188,5 +207,6 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             'localization_assumption_px': error, 'unprocessed_motion': gaps, 'tail_beat_extension': [0, 1],
             'limitations': ['All automatic values need video review; missing notes may be undetected.',
                            'Screen landmarks are not verified musical timing.',
-                           'Beats are unsnapped midpoints of conditional ranges, not exact musical values.',
+                           'Automatic starts require a unique grid candidate within the measured range. '
+                           'Hold ends use the midpoint of their own range.',
                            'The localization allowance is a draft assumption, not a certified error bound.']}

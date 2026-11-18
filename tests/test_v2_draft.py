@@ -25,6 +25,68 @@ def empty_draft():
 
 
 class DraftTest(unittest.TestCase):
+    def test_grid_starts_preserve_measurements_and_expose_all_choices(self):
+        from ez2rc.v2.draft import beat_text, parse_beat
+        from ez2rc.v2.draft_projection import apply_start_grid
+        from ez2rc.v2.picture import decide, pending_items
+        from ez2rc.v2.review import write_review
+        from test_v2_rhythm import domain
+
+        # The start range straddles ticks 3 and 4 above beat two.
+        bounds = domain(F(129, 64), F(97, 48))
+        midpoint = F(2) + F(7, 384)
+        estimate = [midpoint.numerator, midpoint.denominator]
+        def measured(identity, beat_range, end=None):
+            lo, hi = (F(*beat_range[side]) for side in ('lower', 'upper'))
+            center = (lo + hi) / 2
+            raw = [center.numerator, center.denominator]
+            note = {'id': identity, 'lane': 0, 'type': 'longnote' if end else 'tap',
+                    'origin': 'automatic', 'start_beat': raw, 'end_beat': end, 'status': 'draft',
+                    'issues': [], 'evidence': {'event_id': identity, 'start': {
+                        'beat_range': beat_range, 'estimate': raw, 'witnesses': []}}}
+            apply_start_grid(note)
+            return note
+
+        ambiguous = measured('two', bounds, [13, 5])
+        self.assertEqual(ambiguous['evidence']['start']['estimate'], estimate)
+        self.assertEqual(ambiguous['evidence']['start']['candidate_ticks'], [387, 388])
+        self.assertIsNone(ambiguous['start_beat'])
+        unique = measured('one', {**bounds, 'lower_inclusive': False})
+        self.assertEqual(unique['start_beat'], [97, 48])
+        # 1/192 is an internal tick, between allowed fractions.
+        empty = measured('zero', domain(F(1, 192), F(1, 192)))
+        self.assertEqual(empty['issues'], ['start_grid_no_candidate'])
+        self.assertIsNone(empty['start_beat'])
+        shared = measured('shared', domain(F(-1, 16), F(-1, 16)))
+        self.assertEqual(shared['evidence']['start']['candidate_ticks'], [-12])
+        self.assertEqual(shared['start_beat'], [-1, 16])
+        short = measured('short', bounds, [97, 48])
+        self.assertEqual(short['start_beat'], [129, 64])
+        self.assertEqual(short['end_beat'], [97, 48])
+
+        base = empty_draft()
+        draft = create_draft({**base['projection'], 'notes': [ambiguous, unique, empty],
+                              'alternatives': []}, base['metadata'], '120', {})
+        items = pending_items(draft)
+        self.assertEqual(len(items), 2)
+        choices = items[1].options
+        self.assertEqual([n['start_beat'] for n in choices.values()], [None, [129, 64], [97, 48]])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'review.html'
+            write_review(path, draft)
+            self.assertIn('2 + 1/64 or 2 + 1/48', path.read_text())
+            chosen = decide(draft, items[1], 'C', {})
+            path = Path(tmp) / 'draft.json'
+            save_draft(path, chosen)
+            saved = read_draft(path)
+            self.assertEqual(list(pending_items(saved)), [2])
+            self.assertEqual(saved['notes'][0]['start_beat'], [97, 48])
+            self.assertEqual(saved['notes'][0]['end_beat'], [13, 5])
+            self.assertEqual(saved['notes'][0]['issues'], [])
+            self.assertEqual(saved['notes'][0]['evidence'], ambiguous['evidence'])
+        for value in ([-9, 4], [-1, 48], [0, 1], [1, 64], [97, 48]):
+            self.assertEqual(parse_beat(beat_text(value)), value)
+
     def test_default_starts_use_last_template_row_and_tails_keep_their_top(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -205,11 +267,19 @@ class DraftTest(unittest.TestCase):
                     lower, upper = F(*domain['lower']), F(*domain['upper'])
                     self.assertLessEqual(lower, known)
                     self.assertGreaterEqual(upper, known)
-                    self.assertEqual(F(*note[side+'_beat']), (lower+upper)/2)
+                    point = note['evidence'][side]
+                    self.assertEqual(F(*point['estimate']), (lower+upper)/2)
+                    if side == 'start':
+                        self.assertIsNone(note['start_beat'])
+                        self.assertIn(int(known * 192), point['candidate_ticks'])
+                        self.assertGreater(len(point['candidate_ticks']), 1)
+                    else:
+                        self.assertEqual(note['end_beat'], point['estimate'])
                     # The independently generated screen endpoint is in the
                     # range, while an added musical extension is outside it.
                     self.assertLess(upper, known+F(1, 16))
-            self.assertTrue(all(n['status'] == 'draft' for n in draft['notes']))
+            self.assertTrue(all('start_grid_ambiguous' in n['issues'] and n['status'] == 'unresolved'
+                                for n in draft['notes']))
             self.assertTrue(draft['projection']['unprocessed_motion'])
             self.assertEqual(json.loads((run/'chart.json').read_text())['notes'], [])
             identity = longs[0]['id']

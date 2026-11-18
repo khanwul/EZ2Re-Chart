@@ -34,7 +34,7 @@ from .spatial_resolution import resolve_spatial_chart
 from .physical_review import load_physical_review
 from .calibration_verification import load_calibration_verification
 from .window import song_window, has_context, analysis_scope, scope_events
-from .draft import create_draft, save_draft
+from .draft import create_draft, save_draft, start_choices
 from .draft_projection import draft_timing_issues, project_draft
 from .review import write_review
 
@@ -352,9 +352,18 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             # Retain the two concrete grid interpretations for a binary timing decision.
             visible = {a['marker_id']: a['beat'] for a in barlines['hypotheses'][0]['assignments']}
             if all(visible.get(a['id']) == a['beat'] for a in relative_input['anchors']):
-                draft_projection['timing_choices'] = {
-                    row['candidate_id']: row['note_candidates'] for row in rhythm['candidates']
-                    if row['status'] == 'ambiguous' and len(row['note_candidates']) == 2}
+                selected = {n['id']: n for n in draft_projection['notes']}
+                choices = {}
+                for row in rhythm['candidates']:
+                    note = selected.get(row['candidate_id'])
+                    if note is None or row['status'] != 'ambiguous' or len(row['note_candidates']) != 2:
+                        continue
+                    starts = [note['start_beat']] if note['start_beat'] is not None else start_choices(note)
+                    extra = [pair for pair in row['note_candidates'] if pair['start_beat'] in starts
+                             and pair['end_beat'] != note['end_beat']]
+                    if extra:
+                        choices[note['id']] = extra
+                draft_projection['timing_choices'] = choices
         draft = create_draft(draft_projection, asdict(chart.metadata), song.bpm,
                             {'video': str(song.video), 'video_sha256': meta['video_sha256'],
                              'alignment_offset_px': meta.get('alignment_offset_px'),

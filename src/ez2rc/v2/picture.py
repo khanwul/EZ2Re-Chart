@@ -15,9 +15,10 @@ import numpy as np
 
 from .chart_layout import (COLUMN_HEIGHT, COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL,
                            chart_columns, fit_hold_columns, number_rail_width)
-from .contracts import read_ratio
-from .draft import change_note
+from .contracts import ratio, read_ratio
+from .draft import beat_text, change_note, start_choices
 from .measure_grid import MeasureGrid
+from .rhythm import DEFAULT_SUBDIVISIONS
 
 IMAGE_NAME = 'chart.png'
 
@@ -71,6 +72,12 @@ def pending_items(draft):
         for index, beats in enumerate(timing, len(alternatives) + 1):
             if any(beats[key] != note[key] for key in ('start_beat', 'end_beat')):
                 options[option_letter(index)] = {**note, **beats}
+        # Append grid choices after the letters already allocated to physical and timing alternatives.
+        index = len(alternatives) + len(timing) + 1
+        for candidate in list(options.values()):
+            for start in start_choices(candidate):
+                options[option_letter(index)] = {**candidate, 'start_beat': start}
+                index += 1
         items[number] = Item(number, note, options)
     return items
 
@@ -88,15 +95,11 @@ def decide(draft, item, letter, fields):
         key = side + '_beat'
         if fields.get(key, candidate[key]) is None:
             raise ValueError(f'Check the position and supply the beat with --{side}.')
+    beats = {key: candidate[key] for key in ('start_beat', 'end_beat')}
     if candidate['id'] == identity:
-        beats = {key: candidate[key] for key in ('start_beat', 'end_beat')}
         return change_note(draft, 'edit', identity=identity, fields={**beats, **fields}, confirm=True)
     removed = change_note(draft, 'delete', identity=identity)
-    return change_note(removed, 'adopt', identity=candidate['id'], fields=fields, confirm=True)
-
-
-def beat_text(value):
-    return '?' if value is None else f'{float(read_ratio(value)):.4f}'.rstrip('0').rstrip('.')
+    return change_note(removed, 'adopt', identity=candidate['id'], fields={**beats, **fields}, confirm=True)
 
 
 def description(note):
@@ -134,6 +137,37 @@ def _display_phase(draft):
     if abs(phase) <= Fraction(1, 16) and agreeing * 3 >= len(slots) * 2:
         return phase
     return Fraction(0)
+
+
+def _start_labels(draft, grid):
+    """Lay out one fractional beat label per occupied row, including chords."""
+    positions = defaultdict(set)
+    if 'start_ticks_per_beat' in draft['projection']:
+        for note in draft['notes']:
+            if note['start_beat'] is not None:
+                beat = read_ratio(note['start_beat'])
+                positions[grid.column(beat, COLUMN_MEASURES)].add(beat)
+    labels = defaultdict(list)
+    slot_width = slots_needed = 0
+    for block, beats in positions.items():
+        base = grid.boundary(block * COLUMN_MEASURES)
+        end = grid.boundary((block + 1) * COLUMN_MEASURES)
+        # Nearby starts can occupy adjacent pixel rows. Stagger their labels
+        # horizontally and keep the guide for each at its actual beat.
+        last_rows = []
+        for beat in sorted(beats, reverse=True):
+            row = round(COLUMN_HEIGHT * (end - beat) / (end - base))
+            caption = beat_text(ratio(beat))
+            width = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, .38, 1)[0][0]
+            slot = next((i for i, last in enumerate(last_rows) if row-last >= 14), len(last_rows))
+            if slot == len(last_rows):
+                last_rows.append(row)
+            else:
+                last_rows[slot] = row
+            labels[block].append((row, slot, caption))
+            slot_width = max(slot_width, width + 7)
+        slots_needed = max(slots_needed, len(last_rows))
+    return labels, slots_needed, slot_width
 
 
 def chart_strips(draft, items):
@@ -189,7 +223,8 @@ def chart_strips(draft, items):
 
     ordered = list(chart_columns(blocks))
     rail_width = number_rail_width(blocks, grid if grid.numbered else None)
-    panel = rail_width + lanes * lane_width + 10
+    start_labels, slots, slot_width = _start_labels(draft, grid)
+    panel = rail_width + lanes * lane_width + 10 + slots * slot_width
 
     # The score runs in one row. Place the review key to its right so that
     # adding measures or review choices extends the image horizontally.
@@ -245,7 +280,7 @@ def chart_strips(draft, items):
 
             # Keep guides for occupied subdivisions between quarter-beat lines.
             subdivisions = {p for _, start, end, *_ in blocks[block] for p in (start, end)
-                            if p is not None and base <= p < base+span and p.denominator in (3,6,8,12,16)}
+                            if p is not None and base <= p < base+span and p.denominator in DEFAULT_SUBDIVISIONS}
             for point in subdivisions:
                 cv2.line(strip, (left, y(point)), (right-1, y(point)), (73, 83, 96))
             # Draw stronger lines last when several ticks share a pixel.
@@ -311,6 +346,11 @@ def chart_strips(draft, items):
                 numbers = dict.fromkeys(tag.rstrip('ABCDEFGHIJKLMNOPQRSTUVWXYZ') for tag in tags)
                 caption = tags[0] if len(tags) == 1 else '/'.join(numbers)
                 label(strip, caption, x, position-8, (255, 233, 150), .48)
+            for row, slot, caption in start_labels[block]:
+                position = grid_top + row
+                x = right + 5 + slot * slot_width
+                cv2.line(strip, (x-4, position), (x-2, position), (123, 137, 154))
+                label(strip, caption, x, position+4, (182, 194, 208), .38)
         for x, lines in legend_columns:
             for row, line in enumerate(lines):
                 label(strip, line, x, grid_top + row * line_height)

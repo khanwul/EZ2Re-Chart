@@ -5,8 +5,19 @@ import math
 
 from .chart_layout import (COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL,
                            chart_columns, fit_hold_columns, number_rail_width)
-from .contracts import read_ratio
+from .contracts import ratio, read_ratio
+from .draft import beat_text, start_choices
 from .measure_grid import MeasureGrid
+
+
+def _chart_notes(notes):
+    for index, note in enumerate(notes):
+        choices = start_choices(note)
+        if choices:
+            for start in choices:
+                yield index, {**note, 'start_beat': start}
+        else:
+            yield index, note
 
 
 def chart_view(draft):
@@ -16,7 +27,7 @@ def chart_view(draft):
     height, top = 600, 34
     blocks = {}
     missing = []
-    for index, note in enumerate(notes):
+    for index, note in _chart_notes(notes):
         start = read_ratio(note['start_beat']) if note['start_beat'] is not None else None
         end = read_ratio(note['end_beat']) if note['end_beat'] is not None else start
         if start is None:
@@ -48,7 +59,7 @@ def chart_view(draft):
         def y(beat):
             return top + float(base + span - beat) * scale
 
-        pieces = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Chart starting at beat {float(base):g}">',
+        pieces = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Chart starting at beat {beat_text(ratio(base))}">',
                   f'<rect x="{rail_left}" y="{top}" width="{rail_width}" height="540" fill="rgb{MEASURE_RAIL}"/>']
         for lane in range(lanes):
             x = lane_left + lane * 34
@@ -80,8 +91,7 @@ def chart_view(draft):
             tail_y = y(min(end, base+span))
             uncertain = note['status'] == 'unresolved' or bool(note['issues'])
             color = '#ffc857' if uncertain else f'rgb{KEY_COLORS[note["lane"] % 2]}'
-            recorded_start = read_ratio(note['start_beat'])
-            title = escape(f'Lane {note["lane"]+1} · {note["type"]} · Beat {float(recorded_start):g} · {note["id"]}')
+            title = escape(f'Lane {note["lane"]+1} · {note["type"]} · Beat {beat_text(note["start_beat"])} · {note["id"]}')
             pieces.append(f'<a href="#note-{index}" class="chart-note" aria-label="{title}"><title>{title}</title>')
             if note['type'] == 'longnote' and end > start:
                 pieces.append(f'<rect x="{x+5}" y="{tail_y:g}" width="16" height="{head_y-tail_y:g}" fill="{color}" fill-opacity=".72"/>')
@@ -99,7 +109,7 @@ def chart_view(draft):
                     pieces.append(f'<text x="{x+13}" y="{head_y-7:g}" text-anchor="middle" fill="#ffc857">?</text>')
             pieces.append('</a>')
         pieces.append('</svg>')
-        panels.append(f'<figure><figcaption>{float(base):g}–{float(base+span):g} beats</figcaption>{"".join(pieces)}</figure>')
+        panels.append(f'<figure><figcaption>{beat_text(ratio(base))}–{beat_text(ratio(base+span))} beats</figcaption>{"".join(pieces)}</figure>')
     return ('''<style>
 .chart-controls{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin:1rem 0}
 #chart-panels{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding:8px;background:#06080b;color:#d0d6de}
@@ -113,7 +123,7 @@ tr:target{background:#fff0bf;outline:2px solid #d88a00}tr{scroll-margin-top:2rem
 Select a note to see its details below. Yellow notes with a question mark need review.</p>'''
         + ('<p>Measure 1 starts at beat zero. Barlines follow the draft’s measure boundaries.</p>' if grid.numbered else
            '<p>The measure length is unknown, so the chart shows beat ticks.</p>')
-        + '<p>The chart shows the selected draft notes. The table below includes alternative candidates. '
+        + '<p>Possible starts for the same note link to the same table row. The table also lists alternative notes. '
           'Draft positions are estimates. Empty regions may contain undetected notes.</p>'
         + '<div class="chart-controls"><label>Zoom <input id="chart-zoom" type="range" min="180" max="500" value="350"></label></div>'
         + '<div id="chart-panels">' + (''.join(panels) or '<p>No beat positions to display.</p>') + '</div>'

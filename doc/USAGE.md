@@ -39,6 +39,10 @@ Open `chart.png` in the result directory. Read four measures **from bottom to to
 
 Short bars are taps, and vertical strips are holds. Read a tap or hold start at its bottom edge and a hold end at its top edge. Grid lines mark beats and measures. Columns show measure numbers starting at 1. The HTML review uses the same reading direction.
 
+Tap and hold starts use multiples of 1/48 or 1/64 of a beat. These two grids include halves, thirds and their supported subdivisions. Both share a scale of 192 ticks per beat. For example, ticks 3 and 4 represent 1/64 and 1/48. A position shared by both grids counts once.
+
+The draft adopts a start when exactly one position falls in the range measured from the video. Read the fraction to the right of the lanes. Notes in a chord share a label. Several possible positions appear together as numbered choices. A start with no candidate stays marked `?`. Hold ends retain their video estimate. The draft keeps the measured range and midpoint for inspection. Reconstruct an older run to apply the start grid to its observations.
+
 For the commands below, run this from the repository root, replacing the path with the directory printed by `extract`.
 
 ```bash
@@ -54,6 +58,8 @@ The key to the right of your chart lists the choices for each numbered item.
 3. Apply the choice that matches the footage. For example, if item 1 matches option B, run `uv run ez2rc choose 1 B --run "$RUN"`. This updates the draft and redraws `chart.png`.
 
 A keeps the current choice. X removes the note. A `?` marks an unknown beat. Supply `--start` or `--end` if you can establish that position, or leave the item for later.
+
+Beat labels use reduced fractions, such as `2 + 3/16`. To enter that beat manually, use `--start '2 + 3/16'` or `--start 35/16`.
 
 ### Compare with the recording
 

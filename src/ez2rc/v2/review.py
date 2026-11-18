@@ -5,19 +5,13 @@ from pathlib import Path
 import cv2
 
 from .capture import VideoReader
-from .contracts import read_ratio
-from .draft import validate_draft
+from .draft import beat_text, start_text, validate_draft
 from .storage import file_hash
 from .review_chart import chart_view
 
 
 def write_review(path, draft):
     validate_draft(draft)
-    def beat(value):
-        if value is None:
-            return '?'
-        fraction = read_ratio(value)
-        return f'{float(fraction):.6f} ({fraction})'
     rows = []
     selected_ids = {n['id'] for n in draft['notes']}
     alternatives = [n for n in draft['automatic']['alternatives'] if n['id'] not in selected_ids]
@@ -31,7 +25,7 @@ def write_review(path, draft):
                 previews.append(f'<button data-time="{seconds:.6f}">{side}: {seconds:.3f}s</button>')
         rows.append(f'<tr id="note-{index}">' + ''.join(f'<td>{escape(str(value))}</td>' for value in (
             note['id'], 'selected' if note['id'] in selected_ids else 'alternative',
-            note['lane']+1, note['type'], beat(note['start_beat']), beat(note['end_beat']),
+            note['lane']+1, note['type'], start_text(note), beat_text(note['end_beat']),
             note['status'], note['origin'], ', '.join(note['issues'])))
             + '<td>' + ' '.join(previews) + '</td></tr>')
     title = escape(draft['metadata']['title'])
@@ -41,7 +35,6 @@ def write_review(path, draft):
             'button,input{font:inherit}header{background:white;padding:.5rem}</style>'
             f'<h1>{title} — draft revision {draft["revision"]}</h1>'
             '<p>Compare every region with the original video: missing notes may be undetected. '
-            'Values are unsnapped screen estimates, not verified musical timing. '
             'Witness buttons show the original detections, including after a manual beat edit.</p>'
             '<p>Choose the original local video below. Nothing is uploaded. If your browser cannot play its codec, '
             'use your video player or the <code>ez2rc frame</code> command.</p>'

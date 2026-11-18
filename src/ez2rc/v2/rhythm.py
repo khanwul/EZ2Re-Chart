@@ -6,6 +6,7 @@ resolve a competing physical interpretation. Keep those decisions separate.
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import product
+from math import lcm
 
 from .contracts import ratio, read_ratio
 
@@ -27,16 +28,24 @@ class RhythmGrid:
     def snapshot(self):
         return {'subdivisions': list(self.subdivisions)}
 
+    @property
+    def ticks_per_beat(self):
+        return lcm(*self.subdivisions)
 
-def grid_candidates(domain, grid):
-    """Union of the declared grids, preserving which grids support each beat."""
+
+DRAFT_GRID = RhythmGrid()
+
+
+def grid_candidate_ticks(domain, grid):
+    """Map each admissible integer tick to the subdivisions that support it."""
     if domain is None:
         return None
     lower, upper = read_ratio(domain['lower']), read_ratio(domain['upper'])
     if (lower > upper or type(domain['lower_inclusive']) is not bool
             or type(domain['upper_inclusive']) is not bool):
         raise ValueError('invalid rhythm beat domain')
-    beats = {}
+    ticks = {}
+    resolution = grid.ticks_per_beat
     for subdivision in grid.subdivisions:
         a, b = lower * subdivision, upper * subdivision
         first, last = -(-a.numerator // a.denominator), b.numerator // b.denominator
@@ -44,10 +53,19 @@ def grid_candidates(domain, grid):
             first += 1
         if not domain['upper_inclusive'] and b.denominator == 1:
             last -= 1
-        for tick in range(first, last + 1):
-            beat = Fraction(tick, subdivision)
-            beats.setdefault(beat, []).append(subdivision)
-    return [{'beat': ratio(beat), 'subdivisions': divisions} for beat, divisions in sorted(beats.items())]
+        step = resolution // subdivision
+        for index in range(first, last + 1):
+            ticks.setdefault(index * step, []).append(subdivision)
+    return ticks
+
+
+def grid_candidates(domain, grid):
+    ticks = grid_candidate_ticks(domain, grid)
+    if ticks is None:
+        return None
+    resolution = grid.ticks_per_beat
+    return [{'beat': ratio(Fraction(tick, resolution)), 'subdivisions': divisions}
+            for tick, divisions in sorted(ticks.items())]
 
 
 def rhythm_candidates(relative, grid):
