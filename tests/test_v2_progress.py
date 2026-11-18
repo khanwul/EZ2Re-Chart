@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ez2rc.v2.progress import ProgressDisplay, WorkProgress
+from ez2rc.v2.progress import ProgressDisplay, WorkProgress, frame_progress
 from ez2rc.v2.config import load_song, load_profile, AlgorithmConfig
 from ez2rc.v2.observation import collect
 from ez2rc.v2.motion import estimate
@@ -14,6 +14,12 @@ from v2_fixtures import fixture
 
 
 class ProgressTest(unittest.TestCase):
+    def test_video_progress_uses_whole_recording_duration_without_a_full_frame_count(self):
+        self.assertIn('25.0%', frame_progress(5, 250, 0, 1000))
+        self.assertIn('50.0%', frame_progress(5, 250, 0, 1000, total_frames=10))
+        self.assertNotIn('%', frame_progress(5, 250, 0, None))
+        self.assertIn('100.0%', frame_progress(10, 999, 0, None, complete=True, total_frames=10))
+
     def test_counts_are_throttled_but_completion_is_reported(self):
         messages = []
         with patch('ez2rc.v2.progress.time.monotonic', return_value=0):

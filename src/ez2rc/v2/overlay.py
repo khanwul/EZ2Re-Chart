@@ -3,6 +3,7 @@ from bisect import bisect_left
 from collections import defaultdict
 from pathlib import Path
 import os
+import time
 from tempfile import TemporaryDirectory
 
 import av
@@ -13,6 +14,7 @@ from .capture import TimestampClock
 from .contracts import read_ratio
 from .motion import STATUS, open_motion, timeline
 from .observation import template_shapes
+from .progress import frame_progress
 from .photos import _korean_font
 from .storage import digest, file_hash, read_json
 from .window import in_interval
@@ -113,7 +115,7 @@ def _banner(text, fallback, width, height):
     return cv2.resize(strip, (max(1, round(540*factor)), max(1, round(36*factor))))
 
 
-def _encode(source, destination, outlines, origins, capture):
+def _encode(source, destination, outlines, origins, capture, progress, *, total_frames=None):
     frame_count = placed = 0
     with av.open(str(source)) as recording, av.open(str(destination), 'w', options={'movflags': '+faststart'}) as output:
         video = recording.streams.video[0]
@@ -140,6 +142,19 @@ def _encode(source, destination, outlines, origins, capture):
                 transcode.add(stream.index)
         active = _banner('분홍 테두리 · 현재 초안의 예상 위치', 'Pink outlines: draft positions', video.width, video.height)
         unknown = _banner('위치 대조 불가', 'Position unavailable', video.width, video.height)
+        duration_ms = None
+        if video.duration:
+            duration_ms = float(video.duration * video.time_base * 1000)
+        elif recording.duration:
+            duration_ms = recording.duration / 1000
+
+        def report_frames(timestamp_ms, *, complete=False):
+            progress(frame_progress(frame_count, timestamp_ms, 0, duration_ms, complete=complete,
+                                    label='대조 영상 · 프레임 처리', total_frames=frame_count if complete else total_frames))
+
+        if progress:
+            report_frames(0)
+            next_update = time.monotonic() + 2
         for packet in recording.demux(video, *recording.streams.audio):
             if packet.stream.index in audios:
                 audio = audios[packet.stream.index]
@@ -178,8 +193,14 @@ def _encode(source, destination, outlines, origins, capture):
                 for compressed in encoded.encode(rendered):
                     output.mux(compressed)
                 frame_count += 1
+                if progress and time.monotonic() >= next_update:
+                    report_frames(stamp.timestamp_ms)
+                    next_update = time.monotonic() + 2
         if not frame_count or frame_count < capture.get('decoded_frames', 0):
             raise ValueError('원영상 프레임이 부족합니다.')
+        if progress:
+            report_frames(stamp.timestamp_ms, complete=True)
+            progress('대조 영상 · 오디오와 영상 마무리 중')
         for index in transcode:
             for compressed in audios[index].encode(None):
                 output.mux(compressed)
@@ -188,14 +209,18 @@ def _encode(source, destination, outlines, origins, capture):
     return placed, frame_count
 
 
-def write_overlay(destination, draft, analysis_dir, *, video=None):
+def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None):
     destination = Path(destination)
     if destination.suffix.lower() != '.mp4' or destination.exists():
         raise ValueError('저장할 새 MP4 경로를 --output으로 지정하세요.')
     source = draft['source']
     recording = Path(video or source['video'])
+    if progress:
+        progress('대조 영상 · 원본 영상 확인 중')
     if not recording.is_file() or file_hash(recording) != source['video_sha256']:
         raise ValueError('초안과 같은 원본 영상을 --video로 지정하세요.')
+    if progress:
+        progress('대조 영상 · 분석 자료 확인 및 노트 위치 계산 중')
     artifacts = analysis_dir / 'artifacts'
     obs = read_json(artifacts/'observations/manifest.json', 'ez2rc.stage-cache')
     motion = open_motion(artifacts/'motion')
@@ -226,7 +251,12 @@ def write_overlay(destination, draft, analysis_dir, *, video=None):
     with TemporaryDirectory(dir=destination.parent) as directory:
         temp = Path(directory)/'overlay.mp4'
         try:
-            placed, total = _encode(recording, temp, outlines, origins, meta['capture'])
+            # A bounded extraction may have stopped decoding before the movie ended.
+            observation = source.get('analysis_window', {}).get('observation', {})
+            total_frames = meta['capture'].get('decoded_frames') if (
+                'end_ms' in observation and observation['end_ms'] is None) else None
+            placed, total = _encode(recording, temp, outlines, origins, meta['capture'], progress,
+                                    total_frames=total_frames)
         except av.FFmpegError as exc:
             raise ValueError(f'대조 영상을 인코딩할 수 없습니다: {exc}') from exc
         os.link(temp, destination)

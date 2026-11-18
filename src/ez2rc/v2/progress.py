@@ -1,17 +1,36 @@
 """Display-only progress estimates; never used for video timing."""
 
+from contextlib import contextmanager
 import time
 import threading
 
 
-def frame_progress(count, timestamp_ms, start_ms, end_ms, *, complete=False):
-    detail = f"{count} frames; video {timestamp_ms / 1000:.1f}s"
-    if end_ms is None or end_ms <= start_ms:
-        return f"Observation: {detail}"
-    fraction = 1.0 if complete else max(0.0, min(.99, (timestamp_ms - start_ms) / (end_ms - start_ms)))
+def frame_progress(count, timestamp_ms, start_ms, end_ms, *, complete=False,
+                   label="Observation", total_frames=None):
+    frames = str(count) if total_frames is None else f"{count}/{total_frames}"
+    detail = f"{frames} frames; video {timestamp_ms / 1000:.1f}s"
+    if total_frames:
+        fraction = 1. if complete else min(.999, count / total_frames)
+    elif end_ms is not None and end_ms > start_ms:
+        fraction = 1. if complete else max(0., min(.99, (timestamp_ms - start_ms) / (end_ms - start_ms)))
+    else:
+        return f"{label}: {detail}"
     filled = int(fraction * 24)
     bar = "#" * filled + "-" * (24 - filled)
-    return f"Observation: [{bar}] {fraction:6.1%} | {detail}"
+    return f"{label}: [{bar}] {fraction:6.1%} | {detail}"
+
+
+@contextmanager
+def progress_display(stream, *, enabled):
+    if not enabled:
+        yield None
+        return
+    display = ProgressDisplay(stream)
+    display.start()
+    try:
+        yield display
+    finally:
+        display.finish()
 
 
 class WorkProgress:

@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import shlex
 
+from .progress import progress_display
 from .runner import EXIT_FAILED, execute
 from .storage import read_json
 from .draft import draft_lock, read_draft, save_draft, change_note, parse_beat, describe
@@ -28,6 +29,7 @@ def main(argv=None):
     photos.add_argument('--output', type=Path, help='new directory for the photos')
     photos.add_argument('--video', type=Path, help='original recording in a new location')
     overlay = commands.add_parser('overlay', help='draw the current draft over the original recording')
+    overlay.add_argument('--no-progress', action='store_true', help='hide progress messages')
     overlay.add_argument('--output', type=Path, help='new MP4 file (default: 대조.mp4)')
     overlay.add_argument('--video', type=Path, help='original recording in a new location')
     choose = commands.add_parser('choose', help='apply a numbered choice from the PNG')
@@ -124,17 +126,11 @@ def main(argv=None):
             print(f"Saved draft revision {edited['revision']}: {destination}")
             print(f"{args.command}: {edited['history'][-1]['id']}")
             return 0
-        from .progress import ProgressDisplay
-        progress = ProgressDisplay(sys.stderr)
-        if not args.no_progress:
-            progress.start()
-        try:
+        with progress_display(sys.stderr, enabled=not args.no_progress) as progress:
             code, root = execute(args.config, output_root=args.output,
                                  cache_root=getattr(args, "cache_root", None),
                                  observation_cache=getattr(args, "observations", None),
-                                 progress=None if args.no_progress else progress, picture_output=True)
-        finally:
-            progress.finish()
+                                 progress=progress, picture_output=True)
         run = read_json(root / "run.json", "ez2rc.run", schema_versions=(1, 2))
         result_dir = root.parent if root.name == '.ez2rc' else root
         print(f"{run['status']}: {result_dir}")
@@ -186,7 +182,11 @@ def picture_command(args):
     if args.command == 'overlay':
         from .overlay import write_overlay
         destination = args.output or directory / '대조.mp4'
-        placed, total, omitted = write_overlay(destination, read_draft(path), path.parent, video=args.video)
+        with progress_display(sys.stderr, enabled=not args.no_progress) as progress:
+            if progress:
+                progress('대조 영상 · 채보 초안 읽는 중')
+            placed, total, omitted = write_overlay(destination, read_draft(path), path.parent,
+                                                  video=args.video, progress=progress)
         print(f'대조 영상: {destination} · 위치 대조 가능 {placed}/{total} 프레임')
         if omitted:
             print(f'박자 정보가 부족해 표시할 수 없는 노트 {omitted}개')

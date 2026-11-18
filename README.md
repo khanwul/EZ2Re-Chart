@@ -154,7 +154,9 @@ and endpoints with the visible notes. Numbered barlines anchor the outlines,
 and measured scroll links carry them between frames. Frames without a linked
 position show “위치 대조 불가” (position unavailable). The command reports notes
 omitted because a beat is unknown. The movie retains the recording's frame
-times and audio. Use `--video` if the recording moved, `--run` to select a run,
+times and audio. Progress on stderr shows elapsed time, the frame-processing
+bar, and the final MP4 save stage. For partial extractions, the bar uses video
+time when available. Use `--no-progress` to hide progress. Use `--video` if the recording moved, `--run` to select a run,
 or `--output another.mp4` to save a new comparison after editing.
 
 Reusable stage caches live in `out/.cache/` by default. `extract --cache-root`
