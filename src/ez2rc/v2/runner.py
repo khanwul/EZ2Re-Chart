@@ -351,6 +351,8 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         draft = create_draft(draft_projection, asdict(chart.metadata), song.bpm,
                             {'video': str(song.video), 'video_sha256': meta['video_sha256'],
                              'alignment_offset_px': meta.get('alignment_offset_px'),
+                             'lane_rois': [lane['roi'] for lane in meta['profile']['lanes']],
+                             'timestamp_policy': meta['capture'].get('timestamp_policy', 'strict'),
                              'run_id': run_id, 'code': run['code'],
                              'observation_cache_id': observations.id, 'motion_cache_id': motion.id,
                              'decode_cache_id': decoded.id,
@@ -362,6 +364,14 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             from .picture import IMAGE_NAME, write_picture
             count = write_picture(root.parent / IMAGE_NAME, draft)
             run['picture'] = {'path': '../' + IMAGE_NAME, 'pending_choices': count}
+            if observation_cache is None:
+                from .photos import photo_folder, write_photos
+                folder = photo_folder(draft)
+                try:
+                    photos, missing = write_photos(root.parent / folder, draft, progress=report)
+                    run['picture'].update(photos=photos, folder=folder, missing_items=missing)
+                except (OSError, ValueError) as exc:
+                    run['picture']['photo_error'] = str(exc)
         else:
             write_review(root / 'review.html', draft)
         run['draft'] = {'path': 'draft.json', 'notes': len(draft['notes']),

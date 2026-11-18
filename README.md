@@ -113,6 +113,17 @@ competing note interpretations or a pair of possible beat positions found during
 The key beneath the chart lists the lane and beat for each choice. A question
 mark means that the beat is unknown.
 
+Extraction also saves original video photos in `검토사진-r0000/`. Open the photos
+for one item together. For example, `check-0003-01.png` and `check-0003-02.png`
+show observed moments for item 3. A bright pink outline with a dark outer edge marks each tap. Hold heads are open at the top
+and tails are open at the bottom, toward the body of the hold. Read the question at the top, compare the listed answers and use the
+command beside your choice. When there are no numbered choices, the
+`참고사진-r0000/` folder contains previews that require no input.
+
+Each photo folder is a snapshot of the draft revision. After editing, or to
+create photos for a reconstructed or older run, use `ez2rc photos --run <result-directory>`.
+Supply `--video <path>` if the recording moved.
+
 From that result directory, use the number and letter in the picture:
 
 ```bash

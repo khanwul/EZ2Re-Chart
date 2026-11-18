@@ -64,6 +64,20 @@ class PictureTest(unittest.TestCase):
         self.assertTrue(cap[880-round(53*(10+phase))])
         self.assertFalse(cap[880-53*10])
 
+    def test_hold_outline_opens_toward_body(self):
+        from ez2rc.v2.witness_box import OUTLINE_DARK, OUTLINE_PINK, draw_outline
+        for kind in ('tap', 'head', 'tail'):
+            with self.subTest(kind=kind):
+                image = np.zeros((9, 13, 3), dtype=np.uint8)
+                draw_outline(image, (2, 1), (10, 7), kind)
+                np.testing.assert_array_equal(image[4, 0], OUTLINE_DARK)
+                np.testing.assert_array_equal(image[4, 1], OUTLINE_PINK)
+                marked = image.any(axis=2)
+                self.assertTrue(marked[1:8, [2,10]].all())
+                self.assertTrue((marked[1, 3:10] == (kind != 'head')).all())
+                self.assertTrue((marked[7, 3:10] == (kind != 'tail')).all())
+                self.assertFalse(marked[2:7, 3:10].any())
+
     def test_score_reads_up_then_right_and_hold_continues_after_column_break(self):
         def note(lane, start, end=None):
             return {'id': str(start), 'lane': lane, 'start_beat': [start,1],
@@ -95,8 +109,45 @@ class PictureTest(unittest.TestCase):
                 self.assertIn(main(args), (0, 2))
                 result = next(out.glob('*/*/*/' + IMAGE_NAME)).parent
                 names = {p.name for p in result.iterdir()}
+                from ez2rc.v2.photos import photo_folder
+                folder = photo_folder(read_draft(result/'.ez2rc/draft.json'))
+                if command == 'extract':
+                    self.assertIn(folder, names)
+                else:
+                    self.assertNotIn(folder, names)
+                    self.assertEqual(main(['photos','--run',str(result)]), 0)
+                photos = sorted((result/folder).glob('*.png'))
+                self.assertGreater(len(photos), 1)
+                images = [cv2.imread(str(p)) for p in photos[:2]]
+                self.assertTrue(all(im is not None for im in images))
+                self.assertNotEqual(photos[0].read_bytes(), photos[1].read_bytes())
                 self.assertIsNotNone(cv2.imread(str(result / IMAGE_NAME)))
                 self.assertFalse((result / '.ez2rc/report.html').exists())
+
+    def test_review_question_identifies_the_disputed_endpoint_and_action(self):
+        from ez2rc.v2.photos import review_question, _answers
+        a = {'lane': 2, 'type': 'longnote', 'start_beat': [1,1], 'end_beat': [3,1]}
+        options = {'A': a, 'B': {**a, 'end_beat': [4,1]}}
+        self.assertEqual(review_question(options), '3번 레인의 롱노트는 몇 박에서 끝나나요?')
+        self.assertIn('끝 4박', _answers(options, 3, True)[1])
+        self.assertIn('ez2rc choose 3 B', _answers(options, 3, True)[1])
+        self.assertIn('--end <박자>', _answers({'A': {**a, 'end_beat': None}}, 3, True)[0])
+
+    def test_review_photos_point_to_observed_lane_after_manual_lane_edit(self):
+        from ez2rc.v2.photos import _requests
+        original = {'id':'one', 'lane':0, 'type':'tap', 'issues':['pixel_ambiguous'],
+                    'status':'unresolved', 'start_beat':[1,1], 'end_beat':None,
+                    'evidence':{'start':{'witnesses':[
+                        {'frame_id':8, 'timestamp_ms':160, 'y_px':15},
+                        {'frame_id':10, 'timestamp_ms':200, 'y_px':21}]}}}
+        other = {**original, 'id':'two', 'evidence':{}}
+        draft = {'automatic':{'notes':[original, other], 'alternatives':[]},
+                 'notes':[{**original,'lane':1}, other], 'projection':{}}
+        requests, missing = _requests(draft)
+        self.assertEqual(missing, [2])
+        self.assertEqual(set(requests), {8, 10})
+        self.assertEqual(requests[8][0][:3], ('check-0001-01.png',1,[('A','start',0,original['evidence']['start']['witnesses'][0],'tap')]))
+        self.assertEqual(requests[10][0][:3], ('check-0001-02.png',1,[('A','start',0,original['evidence']['start']['witnesses'][1],'tap')]))
 
     def test_replacement_removal_and_missing_position_keep_item_numbers(self):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):

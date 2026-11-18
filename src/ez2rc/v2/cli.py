@@ -24,8 +24,11 @@ def main(argv=None):
     review.add_argument('draft', type=Path)
     review.add_argument('--output', type=Path, required=True)
     chart = commands.add_parser('chart', help='refresh the PNG from a saved run')
+    photos = commands.add_parser('photos', help='save numbered review photos from the original video')
+    photos.add_argument('--output', type=Path, help='new directory for the photos')
+    photos.add_argument('--video', type=Path, help='original recording in a new location')
     choose = commands.add_parser('choose', help='apply a numbered choice from the PNG')
-    for command in (chart, choose):
+    for command in (chart, choose, photos):
         command.add_argument('--run', type=Path, default=Path('.'), help='result directory (default: here)')
     choose.add_argument('number', type=int)
     choose.add_argument('letter', nargs='?', help='letter in the picture, or X to remove')
@@ -72,7 +75,7 @@ def main(argv=None):
                                  help="observation cache directory, or run/artifacts/observations")
     args = parser.parse_args(argv)
     try:
-        if args.command in ('chart', 'choose'):
+        if args.command in ('chart', 'choose', 'photos'):
             return picture_command(args)
         if args.command == 'init':
             from .setup import initialize
@@ -137,6 +140,12 @@ def main(argv=None):
             print(f"채보 그림: {result_dir / IMAGE_NAME}")
             count = run['picture']['pending_choices']
             print(f"번호가 붙은 확인 항목 {count}개")
+            if run['picture'].get('photos'):
+                print(f"원영상 사진 {run['picture']['photos']}장: {result_dir / run['picture']['folder']}")
+            if run['picture'].get('missing_items'):
+                print(f"관측 프레임이 없는 항목 {len(run['picture']['missing_items'])}개")
+            if 'photo_error' in run['picture']:
+                print(f"사진 생성 실패: {run['picture']['photo_error']}", file=sys.stderr)
             if count:
                 print(f"cd {shlex.quote(str(result_dir))}")
                 print("ez2rc choose 1     # 첫 항목의 선택지 보기")
@@ -172,6 +181,17 @@ def picture_command(args):
         print(image)
         return 0
     draft = read_draft(path)
+    if args.command == 'photos':
+        from .photos import photo_folder, write_photos
+        destination = args.output or directory / photo_folder(draft)
+        count, missing = write_photos(destination, draft, video=args.video, analysis_dir=path.parent)
+        if count:
+            print(f'원영상 사진 {count}장: {destination}')
+        else:
+            print('사진으로 표시할 관측 프레임이 없습니다.')
+        if missing:
+            print('관측 프레임이 없는 항목: ' + ', '.join(map(str, missing)))
+        return 0
     item = pending_items(draft).get(args.number)
     if item is None:
         raise ValueError('이 번호로 선택할 항목이 없습니다. 현재 채보 그림을 확인하세요.')
@@ -191,7 +211,8 @@ def picture_command(args):
     if args.side or args.video:
         raise ValueError('--side와 --video는 --frame과 함께 사용하세요.')
     if not args.letter:
-        print(f'{item.number}번 · {item.note["lane"]+1}레인')
+        from .photos import review_question
+        print(f'{item.number}번 · {review_question(item.options)}')
         for key, note in item.options.items():
             start = beat_text(note['start_beat'])
             if note['type'] == 'tap':
