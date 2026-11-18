@@ -13,7 +13,20 @@ from .observation import template_shapes
 from .relative_beats import project_relative_beats
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-4'
+VERSION = 'screen-coordinate-draft-5'
+
+
+def draft_endpoint_offset(profile, kind, template_height=None):
+    """Pixel offset from the matched top row to the draft's timing landmark."""
+    overrides = profile.get('draft_offsets_px', {})
+    if kind in overrides:
+        return overrides[kind]
+    calibration = profile['calibration'][kind]
+    if calibration['status'] == 'verified':
+        return calibration['offset_px']
+    if kind in ('tap', 'head') and template_height is not None:
+        return template_height - 1
+    return 0
 
 
 def project_draft(observations, movement, decoded, barlines, *, allowed_candidates=None, analysis_scope=None):
@@ -27,6 +40,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             ('observation_cache_id', observations), ('motion_cache_id', movement), ('decode_cache_id', decoded))):
         raise ValueError('draft analysis scope parent mismatch')
     profile = observations.manifest['metadata']['profile']
+    shapes = template_shapes(observations.manifest['key']['parameters'])
     clock = timeline(movement)
     times = dict(zip(map(int, clock['frame_id']), map(float, clock['timestamp_ms'])))
     # This is a declared draft assumption, not a verified localization bound.
@@ -50,9 +64,8 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                     continue
                 endpoint = eps[eid]
                 kind = endpoint['kind']
-                base = profile['calibration'][kind]
-                offset = base['offset_px'] if base['status'] == 'verified' else 0
-                offset = profile.get('draft_offsets_px', {}).get(kind, offset)
+                height = shapes[lane['lane']][kind][0] if shapes is not None else None
+                offset = draft_endpoint_offset(profile, kind, height)
                 if candidate['selected'] and endpoint['q_px'] is not None:
                     calibration['endpoint_calibrations'].append({
                         'endpoint_id': eid, 'candidate_id': candidate['id'], 'version': VERSION,
@@ -63,7 +76,6 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                         frame, lane_id, seed = [int(v[1:]) for v in oid.split(':')]
                         requests[(frame, lane_id, seed, KINDS.index(kind))].append(eid)
     reference = spatial_reference(barlines, calibration)
-    shapes = template_shapes(observations.manifest['key']['parameters'])
     relative = (project_relative_beats(observations, movement, decoded, reference,
                                       measure_beats=read_ratio(reference['measure_beats']), draft_tap_anchors=True)
                 if reference is not None and shapes is not None else None)
@@ -139,6 +151,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     geometry = relative.get('observed_geometry', {}) if relative else {}
     scale = geometry.get('scale_bounds_px_per_beat')
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
+            'default_start_reference': 'template_bottom',
             'measure_beats': reference['measure_beats'] if reference is not None else None,
             'coordinate': 'first_numbered_barline_zero', 'origin_issues': sorted(set(origin_issues)),
             'scale_px_per_beat': scale, 'scale_basis': 'shared_observation_geometry',

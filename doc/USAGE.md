@@ -21,6 +21,8 @@ Keep the judgment line visible at the start. Crop each template at the original 
 | Hold head | `note_white_lnhead.png` | `note_cyan_lnhead.png` |
 | Hold tail | `note_white_lntail.png` | `note_cyan_lntail.png` |
 
+For the default draft timing, crop tap and hold-head templates flush with the bottom of the note. Crop hold-tail templates flush with the top of the tail. A profile can specify `draft_offsets_px` for templates with padding. Each offset is measured downward from the first row of the matching template.
+
 ## First run
 
 Follow the three commands in the [quick start](../README.md#quick-start). `init` creates a new project directory containing `song.toml`, the profile, and copies of the templates. The video stays at its original path. To label the result, add `--title "My Song" --difficulty HD` to `init`.

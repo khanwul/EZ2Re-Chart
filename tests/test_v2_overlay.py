@@ -16,6 +16,22 @@ from test_v2_barline_pipeline import marked_video
 
 
 class OverlayTest(unittest.TestCase):
+    def test_outline_inverts_the_saved_start_convention_and_profile_overrides(self):
+        profile = {'calibration': {k: {'status': 'unverified'} for k in ('tap','head','tail')},
+                   'lanes': [{'roi': [0,0,20,100]}]}
+        shapes = [{'tap': [5,10], 'head': [8,10], 'tail': [3,10]}]
+        draft = {'notes': [
+            {'start_beat':[1,1], 'end_beat':None, 'lane':0, 'type':'tap'},
+            {'start_beat':[2,1], 'end_beat':[3,1], 'lane':0, 'type':'longnote'}]}
+        def bounds():
+            return [r[-2:] for r in Outlines(draft, profile, shapes, (0,0), 10).rows]
+        self.assertEqual(bounds(), [(-10,-6), (-30,-13)])
+        draft['projection'] = {'default_start_reference':'template_bottom'}
+        self.assertEqual(bounds(), [(-14,-10), (-30,-20)])
+        profile['calibration']['head'] = {'status':'verified', 'offset_px':1}
+        profile['draft_offsets_px'] = {'tap':0, 'tail':2}
+        self.assertEqual(bounds(), [(-10,-6), (-32,-14)])
+
     def test_scroll_requires_a_link_to_a_numbered_line(self):
         grid = {'status': 'supported', 'hypotheses': [{'assignments': [
             {'marker_id': 'line', 'beat': [4, 1]}]}], 'tracks': [

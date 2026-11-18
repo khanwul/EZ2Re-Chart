@@ -13,6 +13,7 @@ import numpy as np
 
 from .capture import TimestampClock
 from .contracts import read_ratio
+from .draft_projection import draft_endpoint_offset
 from .motion import STATUS, open_motion, timeline
 from .observation import template_shapes
 from .progress import frame_progress
@@ -109,6 +110,7 @@ class BeatGrid:
 class Outlines:
     def __init__(self, draft, profile, shapes, alignment, scale):
         dx, dy = alignment
+        bottom_start = draft.get('projection', {}).get('default_start_reference') == 'template_bottom'
         self.rows = []
         self.omitted = 0
         for note in draft['notes']:
@@ -119,9 +121,9 @@ class Outlines:
                 continue
 
             def distance(key, kind):
-                calibration = profile['calibration'][kind]
-                offset = calibration['offset_px'] if calibration['status'] == 'verified' else 0
-                offset = profile.get('draft_offsets_px', {}).get(kind, offset)
+                # Drafts made before bottom-edge timing used the matched top.
+                height = shapes[lane][kind][0] if bottom_start else None
+                offset = draft_endpoint_offset(profile, kind, height)
                 return float(read_ratio(note[key])) * scale + offset
 
             # Both beat coordinates describe template tops after undoing the

@@ -25,6 +25,31 @@ def empty_draft():
 
 
 class DraftTest(unittest.TestCase):
+    def test_default_starts_use_last_template_row_and_tails_keep_their_top(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            song = marked_video(root, longnotes=True)
+            profile = root/'profile.toml'
+            profile.write_text(profile.read_text().replace(
+                'status = "verified"\noffset_px = 0.0\nerror_px = 0.0', 'status = "unverified"'))
+            _, run = execute(song, output_root=root/'out')
+            draft = read_draft(run/'draft.json')
+            self.assertEqual(draft['projection']['default_start_reference'], 'template_bottom')
+            expected_heads = {0: F(3, 2), 1: F(11, 4)}
+            expected_tails = {0: F(5, 2), 1: F(17, 4)}
+            self.assertEqual(len(draft['notes']), 6)
+            for note in draft['notes']:
+                for side in ('start', 'end') if note['type'] == 'longnote' else ('start',):
+                    point = note['evidence'][side]
+                    height = point['witnesses'][0]['box_px'][3]
+                    offset = height - 1 if side == 'start' else 0
+                    self.assertEqual(point['offset_px'], [offset, 1])
+                    if note['type'] == 'longnote':
+                        top_beat = (expected_heads if side == 'start' else expected_tails)[note['lane']]
+                        expected = top_beat - F(offset, 60)
+                        self.assertLessEqual(F(*point['beat_range']['lower']), expected)
+                        self.assertGreaterEqual(F(*point['beat_range']['upper']), expected)
+
     def test_reconstruct_without_template_shapes_saves_unresolved_draft_and_chart(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
