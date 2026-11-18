@@ -137,6 +137,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     geometry = relative.get('observed_geometry', {}) if relative else {}
     scale = geometry.get('scale_bounds_px_per_beat')
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
+            'measure_beats': reference['measure_beats'] if reference is not None else None,
             'coordinate': 'first_numbered_barline_zero', 'origin_issues': sorted(set(origin_issues)),
             'scale_px_per_beat': scale, 'scale_basis': 'shared_observation_geometry',
             'geometry_status': geometry.get('status', 'unavailable'),

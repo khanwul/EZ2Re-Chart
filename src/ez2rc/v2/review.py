@@ -1,4 +1,4 @@
-"""Video witnesses and a local review table for editable drafts."""
+"""Visual chart, video witnesses and a local review table for editable drafts."""
 from html import escape
 from pathlib import Path
 
@@ -8,6 +8,7 @@ from .capture import VideoReader
 from .contracts import read_ratio
 from .draft import validate_draft
 from .storage import file_hash
+from .review_chart import chart_view
 
 
 def write_review(path, draft):
@@ -20,7 +21,7 @@ def write_review(path, draft):
     rows = []
     selected_ids = {n['id'] for n in draft['notes']}
     alternatives = [n for n in draft['automatic']['alternatives'] if n['id'] not in selected_ids]
-    for note in draft['notes'] + alternatives:
+    for index, note in enumerate(draft['notes'] + alternatives):
         previews = []
         for side in ('start', 'end'):
             evidence = note['evidence'].get(side)
@@ -28,16 +29,16 @@ def write_review(path, draft):
                 witness = evidence['witnesses'][0]
                 seconds = witness['timestamp_ms']/1000
                 previews.append(f'<button data-time="{seconds:.6f}">{side}: {seconds:.3f}s</button>')
-        rows.append('<tr>' + ''.join(f'<td>{escape(str(value))}</td>' for value in (
+        rows.append(f'<tr id="note-{index}">' + ''.join(f'<td>{escape(str(value))}</td>' for value in (
             note['id'], 'selected' if note['id'] in selected_ids else 'alternative',
             note['lane']+1, note['type'], beat(note['start_beat']), beat(note['end_beat']),
             note['status'], note['origin'], ', '.join(note['issues'])))
             + '<td>' + ' '.join(previews) + '</td></tr>')
     title = escape(draft['metadata']['title'])
-    html = (f'<!doctype html><html lang="en"><meta charset="utf-8"><title>{title} — draft review</title>'
+    html = (f'<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} — draft review</title>'
             '<style>body{font:16px system-ui;margin:2rem}video{width:100%;max-height:60vh;background:#111}'
             'table{border-collapse:collapse;width:100%}td,th{padding:.5rem;border-bottom:1px solid #ccc;text-align:left}'
-            'button,input{font:inherit}header{position:sticky;top:0;background:white;padding:.5rem}</style>'
+            'button,input{font:inherit}header{background:white;padding:.5rem}</style>'
             f'<h1>{title} — draft revision {draft["revision"]}</h1>'
             '<p>Compare every region with the original video: missing notes may be undetected. '
             'Values are unsnapped screen estimates, not verified musical timing. '
@@ -52,14 +53,18 @@ def write_review(path, draft):
             f'<p>{len(draft["notes"])} selected notes; {len(draft["automatic"]["alternatives"])} alternatives; '
             f'{len(draft["projection"]["unprocessed_motion"])} uncertain motion spans. '
             'An alternative is not an additional selected note.</p>'
-            '<table><thead><tr><th>ID</th><th>Selection</th><th>Lane</th><th>Type</th><th>Start beat</th><th>End beat</th>'
+            + chart_view(draft) +
+            '<h2>노트 상세 · 대안 후보</h2><div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Selection</th><th>Lane</th><th>Type</th><th>Start beat</th><th>End beat</th>'
             '<th>Status</th><th>Origin</th><th>Issues</th><th>Video witnesses</th></tr></thead><tbody>'
-            + ''.join(rows) + '</tbody></table><h2>Uncertain motion spans</h2><ul>'
+            + ''.join(rows) + '</tbody></table></div><h2>Uncertain motion spans</h2><ul>'
             + ''.join(f'<li>{r["start_ms"]/1000:.3f}–{r["end_ms"]/1000:.3f}s '
                       f'(frames {r["first_frame"]}–{r["last_frame"]})</li>'
                       for r in draft['projection']['unprocessed_motion'])
             + '</ul><script>'
             'const video=document.getElementById("video");let url;'
+            'document.querySelectorAll("a[href]").forEach(a=>a.addEventListener("click",()=>{'
+            'if(!a.getAttribute("href").startsWith("#note-"))return;'
+            'document.getElementById("filter").value="";document.querySelectorAll("tbody tr").forEach(r=>r.hidden=false);}));'
             'document.getElementById("file").addEventListener("change",e=>{'
             'if(!e.target.files.length)return;if(url)URL.revokeObjectURL(url);'
             'url=URL.createObjectURL(e.target.files[0]);video.src=url;});'

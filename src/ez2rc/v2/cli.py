@@ -73,7 +73,7 @@ def main(argv=None):
             if args.output.exists():
                 raise ValueError('review output already exists; choose a new filename')
             write_review(args.output, read_draft(args.draft))
-            print(f'Local review table saved: {args.output}')
+            print(f'Visual review saved: {args.output}')
             return 0
         if args.command == 'frame':
             from .review import export_frame
