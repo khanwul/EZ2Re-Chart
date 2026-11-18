@@ -33,16 +33,17 @@ class PictureTest(unittest.TestCase):
         lines = np.flatnonzero(is_beat | is_measure)[::-1]
         self.assertEqual(len(lines), 49)
         self.assertTrue(is_measure[lines[::12]].all())
-        # The cap is wider than the hold body. At its side, the grid line
-        # must meet the cap on its last painted row.
+        # The cap is wider than the body. Both ends face inward.
         cap = (score[:,44] == (232,238,247)).all(axis=1)
-        for beat in (1,12,15):
+        for beat in (1,12):
             row = lines[beat]
             self.assertTrue(cap[row])
             self.assertFalse(cap[row+1])
+        self.assertTrue(cap[lines[15]])
+        self.assertFalse(cap[lines[15]-1])
         self.assertTrue(cap[lines[17]+1:lines[16]].any())
 
-    def test_systematic_capture_offset_aligns_auto_notes_but_keeps_manual_beats(self):
+    def test_legacy_display_phase_applies_only_to_automatic_starts(self):
         from fractions import Fraction
         def note(name, beat, origin='automatic', end=None):
             return {'id':name, 'origin':origin, 'lane':0, 'start_beat':list(beat.as_integer_ratio()),
@@ -60,9 +61,24 @@ class PictureTest(unittest.TestCase):
             return np.flatnonzero((grid == color).all(axis=1) & cap & ~np.roll(cap,-1))
         self.assertEqual(len(on_line((158,168,180))), 3)  # beats 0, 4, 8
         self.assertEqual(len(on_line((106,118,133))), 6)
-        self.assertEqual(len(on_line((73,83,96))), 1)     # hold tail at 9.5
+        tail_row = 880-round(53*(9+phase+Fraction(1,2)))
+        self.assertTrue(cap[tail_row])
+        self.assertFalse(cap[tail_row-1])
         self.assertTrue(cap[880-round(53*(10+phase))])
         self.assertFalse(cap[880-53*10])
+
+    def test_observed_tail_before_measure_preserves_a_visible_gap(self):
+        # At this scale the off-grid tail is one raster row below the line.
+        # A cap painted above the endpoint would overlap the line.
+        for start in ([2,1], None):
+            note = {'id':'hold', 'origin':'automatic', 'lane':0,
+                    'start_beat':start, 'end_beat':[399,100]}
+            draft = {'metadata':{'lane_count':2}, 'bpm':'120', 'notes':[note],
+                     'projection':{'measure_beats':[4,1], 'default_start_reference':'template_bottom'}}
+            _, score = chart_strips(draft, {})
+            bar = 880 - 53*4
+            np.testing.assert_array_equal(score[bar,44], score[bar,85])
+            np.testing.assert_array_equal(score[bar+1,44], (232,238,247))
 
     def test_hold_outline_opens_toward_body(self):
         from ez2rc.v2.witness_box import OUTLINE_DARK, OUTLINE_PINK, draw_outline

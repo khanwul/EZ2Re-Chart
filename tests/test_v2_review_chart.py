@@ -26,6 +26,15 @@ class Elements(HTMLParser):
 
 
 class ReviewChartTest(unittest.TestCase):
+    def test_short_hold_before_a_measure_stays_inside_both_endpoints(self):
+        html = chart_view(draft([note('short', [159,40], [399,100])], [4,1]))
+        marks = [a for t,a in Elements(html).elements if t == 'rect' and a['width'] in ('14','26')]
+        self.assertEqual(len(marks), 3)
+        for mark in marks:
+            y = float(mark['y'])
+            self.assertAlmostEqual(y, 34 + 159/40 * 540/16, places=3)
+            self.assertAlmostEqual(y+float(mark['height']), 34 + 399/100 * 540/16, places=3)
+
     def test_long_note_continues_across_columns_without_duplicate_head(self):
         html = chart_view(draft([note('held', [15, 1], [17, 1])], [4, 1]))
         tags = Elements(html).elements

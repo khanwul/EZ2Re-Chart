@@ -143,7 +143,8 @@ def chart_strips(draft, items):
     lane_width = 28
     panel = 50 + lanes * lane_width
     grid_top, grid_bottom = 32, 880
-    phase = _display_phase(draft)
+    bottom_start = draft['projection'].get('default_start_reference') == 'template_bottom'
+    phase = Fraction(0) if bottom_start else _display_phase(draft)
     tolerance = min(span / (grid_bottom-grid_top), Fraction(1, 96))
 
     def displayed(beat):
@@ -160,21 +161,16 @@ def chart_strips(draft, items):
     def place(note, tag='', alternative=False, grid_choice=False):
         automatic = (note.get('origin') == 'automatic' and note.get('status') != 'reviewed'
                      and not grid_choice)
-        if note['start_beat'] is None:
-            if note['end_beat'] is not None:
-                end = read_ratio(note['end_beat'])
-                if automatic:
-                    end = displayed(end)
-                blocks[end // span].append((note['lane'], end, end, tag, alternative))
+        start = read_ratio(note['start_beat']) if note['start_beat'] is not None else None
+        end = read_ratio(note['end_beat']) if note['end_beat'] is not None else None
+        if start is None and end is None:
             return
-        start = read_ratio(note['start_beat'])
-        end = read_ratio(note['end_beat']) if note['end_beat'] is not None else start
-        if automatic:
-            first_tick, last_tick = displayed(start), displayed(end)
-            if end > start and last_tick <= first_tick:
-                first_tick, last_tick = start-phase, end-phase
-            start, end = first_tick, last_tick
-        first, last = start // span, end // span
+        if start is not None and automatic and not bottom_start:
+            display_start = displayed(start)
+            if end is None or display_start < end:
+                start = display_start
+        first = (start if start is not None else end) // span
+        last = math.ceil(end / span) - 1 if start is not None and end is not None else first
         # Distant endpoints of a manually entered hold need no intervening empty panels.
         indices = range(first, last + 1) if last - first < 256 else (first, last)
         for block in indices:
@@ -211,7 +207,7 @@ def chart_strips(draft, items):
     label(header, 'Read upwards, then move right.   M = measure' if measure else
           'Read upwards, then move right.   Scale: beats', 14, 54)
     if phase:
-        label(header, f'Auto-note display shift: {float(-phase):+.4f} beat', 370, 54)
+        label(header, f'Auto-start display shift: {float(-phase):+.4f} beat', 370, 54)
     yield header
 
     for offset in range(0, len(ordered), cols):
@@ -233,7 +229,7 @@ def chart_strips(draft, items):
             # Show a quieter guide at occupied subdivisions. Major lines win
             # if a nearby subdivision rounds to the same pixel.
             subdivisions = {p for _, start, end, _, _ in blocks[block] for p in (start, end)
-                            if base <= p < base+span and p.denominator in (2,3,4,6,8,12,16)}
+                            if p is not None and base <= p < base+span and p.denominator in (2,3,4,6,8,12,16)}
             for point in subdivisions:
                 cv2.line(strip, (left, y(point)), (right-1, y(point)), (73, 83, 96))
             # Once beats fall less than a pixel apart, successive projected
@@ -258,21 +254,22 @@ def chart_strips(draft, items):
             markers = defaultdict(list)
             for lane, start, end, tag, alternative in blocks[block]:
                 x = left + lane * lane_width + 1
-                top = y(min(base+span, end))
-                bottom = y(max(base, start))
+                top = y(min(base+span, end)) if end is not None else grid_top
+                bottom = y(max(base, start)) if start is not None else grid_bottom
                 color = (74, 197, 245) if lane % 2 else (232, 238, 247)
                 if tag:
                     color = (106, 226, 208) if alternative else (255, 199, 86)
-                if end > start and bottom >= top:
+                if start is not None and end is not None:
                     body = tuple(round(channel * .72) for channel in color)
                     cv2.rectangle(strip, (x+1, top), (x+lane_width-4, bottom), body,
                                   1 if alternative else -1)
-                for point in {start, end}:
-                    if base <= point < base+span:
+                for point, is_tail in ((start, False), (end, True)):
+                    if point is not None and base <= point <= base+span:
                         position = y(point)
-                        # The inclusive bottom row shares the guide's y coordinate.
-                        cv2.rectangle(strip, (x, max(grid_top,position-4)),
-                                      (x+lane_width-3, position),
+                        # Paint caps inward so a short hold ends at its observed row.
+                        cap_top = position if is_tail else max(top, position-4)
+                        cap_bottom = min(bottom, position+4) if is_tail else position
+                        cv2.rectangle(strip, (x, cap_top), (x+lane_width-3, cap_bottom),
                                       color, 1 if alternative else -1)
                         if tag:
                             markers[x, position].append(tag)

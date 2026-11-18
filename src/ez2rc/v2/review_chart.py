@@ -24,7 +24,8 @@ def chart_view(draft):
             missing.append(f'<li><a href="#note-{index}">{escape(note["id"])}</a> · Lane {note["lane"]+1} · Start beat needs review</li>')
             continue
         end = end if end is not None else start
-        first, last = math.floor(start / span), math.floor(end / span)
+        first = math.floor(start / span)
+        last = math.ceil(end / span) - 1 if end > start else first
         # Bound rendering of malformed or exceptionally long manual notes.
         if last - first > 256:
             missing.append(f'<li><a href="#note-{index}">{escape(note["id"])}</a> · Hold exceeds the display range</li>')
@@ -57,11 +58,13 @@ def chart_view(draft):
             title = escape(f'Lane {note["lane"]+1} · {note["type"]} · Beat {float(start):g} · {note["id"]}')
             pieces.append(f'<a href="#note-{index}" class="chart-note" aria-label="{title}"><title>{title}</title>')
             if note['type'] == 'longnote' and end > start:
-                pieces.append(f'<rect x="{x+6}" y="{y:g}" width="14" height="{max(2,bottom-y):g}" fill="{color}" fill-opacity=".5"/>')
-                if base <= end < base+span:
-                    pieces.append(f'<rect x="{x}" y="{bottom-2:g}" width="26" height="4" fill="{color}"/>')
+                pieces.append(f'<rect x="{x+6}" y="{y:g}" width="14" height="{bottom-y:g}" fill="{color}" fill-opacity=".5"/>')
+                if base < end <= base+span:
+                    tail_height = min(4, bottom-y)
+                    pieces.append(f'<rect x="{x}" y="{bottom-tail_height:g}" width="26" height="{tail_height:g}" fill="{color}"/>')
             if base <= start < base+span:
-                pieces.append(f'<rect x="{x}" y="{y-3:g}" width="26" height="6" rx="1" fill="{color}"/>')
+                head_height = min(6, bottom-y) if end > start else 6
+                pieces.append(f'<rect x="{x}" y="{y:g}" width="26" height="{head_height:g}" rx="1" fill="{color}"/>')
                 if uncertain:
                     pieces.append(f'<text x="{x+13}" y="{y-7:g}" text-anchor="middle" fill="#ffc857">?</text>')
             pieces.append('</a>')

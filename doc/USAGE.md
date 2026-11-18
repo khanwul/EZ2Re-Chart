@@ -31,7 +31,7 @@ Follow the three commands in the [quick start](../README.md#quick-start). `init`
 
 ## Review the draft
 
-Open `chart.png` in the result directory. Read each column **from bottom to top**, then move right. Short bars are taps, and vertical strips are holds. Read the beat at the bottom edge of each bar. Thin lines mark beats and brighter lines mark measures.
+Open `chart.png` in the result directory. Read each column **from bottom to top**, then move right. Short bars are taps, and vertical strips are holds. Read a tap or hold start at its bottom edge and a hold end at its top edge. Thin lines mark beats and brighter lines mark measures.
 
 For the commands below, run this from the repository root, replacing the path with the directory printed by `extract`.
 
