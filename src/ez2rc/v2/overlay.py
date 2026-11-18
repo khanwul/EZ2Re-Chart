@@ -1,6 +1,7 @@
 """Render the edited draft in recording coordinates, preserving source frame times."""
 from bisect import bisect_left
 from collections import defaultdict
+from math import ceil, floor
 from pathlib import Path
 import os
 import time
@@ -55,6 +56,55 @@ def frame_origins(clock, grid, scale):
             _, offset = min(points[max(0, i-1):i+1], key=lambda p: abs(p[0]-fid))
             origins[fid] = scroll[fid] + offset
     return origins
+
+
+class BeatGrid:
+    """Moving guides in the same beat-zero coordinate system as the draft."""
+    def __init__(self, profile, alignment, scale, measure):
+        dx, self.dy = alignment
+        self.lanes = [(left + dx, top + self.dy, right + dx, bottom + self.dy)
+                      for left, top, right, bottom in (lane['roi'] for lane in profile['lanes'])]
+        self.scale = scale
+        self.measure = float(read_ratio(measure)) if measure is not None else None
+
+    def draw(self, image, origin):
+        zero = origin + self.dy
+        top = max(0, min(lane[1] for lane in self.lanes))
+        bottom = min(image.shape[0], max(lane[3] for lane in self.lanes))
+        lines = {}
+        for span, is_measure in ((1, False), (self.measure, True)):
+            if span is None:
+                continue
+            spacing = self.scale * span
+            first = ceil((zero - bottom) / spacing)
+            last = floor((zero - top + .5) / spacing)
+            # Keep subpixel grids legible and bound the number of drawn guides.
+            stride = max(1, ceil(4 / spacing))
+            for index in range(first + (-first % stride), last + 1, stride):
+                row = round(zero - index * spacing)
+                if top <= row < bottom:
+                    lines[row] = (is_measure, f'M{index+1}' if is_measure else f'B{index}')
+
+        for row, (is_measure, label) in lines.items():
+            color = (50, 205, 255) if is_measure else (245, 205, 105)
+            spans = [(max(0, left), min(image.shape[1], right)) for left, y1, right, y2 in self.lanes
+                     if y1 <= row < y2 and max(0, left) < min(image.shape[1], right)]
+            if not spans:
+                continue
+            for left, right in spans:
+                if is_measure:
+                    cv2.line(image, (left, row), (right-1, row), color)
+                else:
+                    for x in range(left, right, 14):
+                        cv2.line(image, (x, row), (min(x+7, right-1), row), color)
+            width, height = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, .5, 1)[0]
+            x = min(left for left, _ in spans) - width - 6
+            if x < 0:
+                x = max(right for _, right in spans) + 6
+            if x + width < image.shape[1] and image.shape[0] > height:
+                point = (x, max(height, min(row + height//2, image.shape[0]-2)))
+                for ink, thickness in (((20, 20, 20), 3), (color, 1)):
+                    cv2.putText(image, label, point, cv2.FONT_HERSHEY_SIMPLEX, .5, ink, thickness, cv2.LINE_AA)
 
 
 class Outlines:
@@ -115,7 +165,7 @@ def _banner(text, fallback, width, height):
     return cv2.resize(strip, (max(1, round(540*factor)), max(1, round(36*factor))))
 
 
-def _encode(source, destination, outlines, origins, capture, progress, *, total_frames=None):
+def _encode(source, destination, outlines, beat_grid, origins, capture, progress, *, total_frames=None):
     frame_count = placed = 0
     with av.open(str(source)) as recording, av.open(str(destination), 'w', options={'movflags': '+faststart'}) as output:
         video = recording.streams.video[0]
@@ -140,7 +190,8 @@ def _encode(source, destination, outlines, origins, capture, progress, *, total_
                     audio.layout = layout
                 audios[stream.index] = audio
                 transcode.add(stream.index)
-        active = _banner('분홍 테두리 · 현재 초안의 예상 위치', 'Pink outlines: draft positions', video.width, video.height)
+        active = _banner('분홍 테두리: 노트   금색 실선: 마디   하늘색 점선: 박',
+                         'Pink: notes   Gold: measures   Blue dashes: beats', video.width, video.height)
         unknown = _banner('위치 대조 불가', 'Position unavailable', video.width, video.height)
         duration_ms = None
         if video.duration:
@@ -182,6 +233,7 @@ def _encode(source, destination, outlines, origins, capture, progress, *, total_
                     ms, origin = position
                     if abs(stamp.timestamp_ms - ms) > .001:
                         raise ValueError('원영상과 분석 프레임의 시각이 일치하지 않습니다.')
+                    beat_grid.draw(image, origin)
                     outlines.draw(image, origin)
                     banner = active
                     placed += 1
@@ -247,6 +299,7 @@ def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None
     if not origins:
         raise ValueError('마디선과 스크롤 위치를 연결할 수 있는 프레임이 없습니다.')
     outlines = Outlines(draft, meta['profile'], shapes, meta['alignment_offset_px'], scale)
+    beat_grid = BeatGrid(meta['profile'], meta['alignment_offset_px'], scale, projection.get('measure_beats'))
     destination.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=destination.parent) as directory:
         temp = Path(directory)/'overlay.mp4'
@@ -255,7 +308,7 @@ def write_overlay(destination, draft, analysis_dir, *, video=None, progress=None
             observation = source.get('analysis_window', {}).get('observation', {})
             total_frames = meta['capture'].get('decoded_frames') if (
                 'end_ms' in observation and observation['end_ms'] is None) else None
-            placed, total = _encode(recording, temp, outlines, origins, meta['capture'], progress,
+            placed, total = _encode(recording, temp, outlines, beat_grid, origins, meta['capture'], progress,
                                     total_frames=total_frames)
         except av.FFmpegError as exc:
             raise ValueError(f'대조 영상을 인코딩할 수 없습니다: {exc}') from exc

@@ -149,7 +149,9 @@ ez2rc overlay
 ```
 
 Open `대조.mp4` in a video player. Pink outlines follow the estimated positions
-of the current taps and holds. Pause or slow playback to compare their lanes
+of the current taps and holds. Solid gold lines mark measure boundaries
+(`M1` starts at beat zero). Dashed blue lines mark whole beats, labeled with
+their absolute beat number (`B1` is one beat after zero). Pause or slow playback to compare their lanes
 and endpoints with the visible notes. Numbered barlines anchor the outlines,
 and measured scroll links carry them between frames. Frames without a linked
 position show “위치 대조 불가” (position unavailable). The command reports notes
