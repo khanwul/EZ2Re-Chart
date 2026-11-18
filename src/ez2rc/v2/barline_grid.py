@@ -14,7 +14,7 @@ from .motion import STATUS, timeline
 from .reference import phase_candidates
 
 VERSION = 'first-barline-grid-3'
-OBSERVED_METER_VERSION = 'observed-barline-beats-1'
+OBSERVED_METER_VERSION = 'observed-barline-beats-2'
 
 
 def reconcile_cycles(hypotheses, marker_ids, measure):
@@ -135,7 +135,21 @@ def _unbranched_rows(track):
     return [row for row in track['observations'] if not row.get('association_conflict')]
 
 
-def _crossing_band(rows, center):
+def _capture_times(capture):
+    """Preserve closed crossing bounds at exact container timestamps."""
+    meta = capture.manifest['metadata']
+    origin = (meta['first_pts'] * Fraction(*meta['first_time_base'])
+              if meta['first_pts'] is not None else None)
+    times = {}
+    for chunk in capture.chunks():
+        for frame, pts, base, fallback, ms in zip(
+                *(chunk[k] for k in ('frame_id', 'pts', 'time_base', 'fps_fallback', 'timestamp_ms'))):
+            times[int(frame)] = (exact_ms(float(ms)) if fallback else
+                                 (int(pts) * Fraction(*map(int, base)) - origin) * 1000)
+    return times
+
+
+def _crossing_band(rows, center, times_by_frame):
     """Interpolate the two edges of the observed line across the reference row."""
     times = []
     for edge in (0, 1):
@@ -143,12 +157,19 @@ def _crossing_band(rows, center):
         for a, b in zip(rows, rows[1:]):
             y0, y1 = a['visible_range_px'][edge], b['visible_range_px'][edge]
             if b['frame_id'] == a['frame_id']+1 and y0 <= center < y1:
-                fraction = (center - y0) / (y1 - y0)
-                crossings.append(float(a['timestamp_ms'] + fraction * (b['timestamp_ms'] - a['timestamp_ms'])))
+                fraction = Fraction(float(center - y0)) / Fraction(float(y1 - y0))
+                t0, t1 = (times_by_frame[r['frame_id']] for r in (a, b))
+                crossings.append(t0 + fraction * (t1 - t0))
         if len(crossings) != 1:
             return None
         times.extend(crossings)
     return sorted(times)
+
+
+def _marker_interval(marker, field):
+    if field + '_exact' in marker:
+        return map(read_ratio, marker[field + '_exact'])
+    return map(exact_ms, marker[field])
 
 
 def observed_barline_beats(markers, beat_ms):
@@ -167,8 +188,8 @@ def observed_barline_beats(markers, beat_ms):
         for field in ('timestamp_interval_ms', 'crossing_band_ms'):
             if not first.get(field) or not marker.get(field):
                 continue
-            a, b = map(exact_ms, marker[field])
-            start, stop = map(exact_ms, first[field])
+            a, b = _marker_interval(marker, field)
+            start, stop = _marker_interval(first, field)
             low = math.ceil(4 * (a - stop) / beat_ms)
             high = math.floor(4 * (b - start) / beat_ms)
             if low == high and Fraction(low, 4) > beats[-1]:
@@ -200,7 +221,7 @@ def observed_barline_beats(markers, beat_ms):
              'numbering_basis': 'observed_crossings'}], gaps, unplaced, []
 
 
-def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_meter=False):
+def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_meter=False, capture=None):
     result = {'format':'ez2rc.barline-grid','schema_version':1,'algorithm_version':VERSION,
               'observation_cache_id':observations.id,'motion_cache_id':movement.id,
               'bpm':bpm,'measure_beats':ratio(measure_beats) if measure_beats else None,
@@ -222,6 +243,11 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
     motion_parameters = movement.manifest['key']['parameters']
     clock = timeline(movement)
     clock_index = {int(f):i for i,f in enumerate(clock['frame_id'])}
+    if observed_meter:
+        if capture is not None and observations.manifest['key']['parents'] != [capture.id]:
+            raise ValueError('barline capture lineage mismatch')
+        times_by_frame = (_capture_times(capture) if capture is not None else
+                          {f: exact_ms(float(clock['timestamp_ms'][i])) for f, i in clock_index.items()})
     top, bottom = profile['lanes'][0]['roi'][1],int(profile['effect_top'])
     center, width = (top+bottom)/2,parameters['barline_max_thickness']
     previous, previous_frame, first_detection = [],None,None
@@ -285,7 +311,11 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
             a,b = crossing[0]
             markers.append({'id':track['id'],'timestamp_interval_ms':[a['timestamp_ms'],b['timestamp_ms']]})
             if observed_meter:
-                markers[-1]['crossing_band_ms'] = _crossing_band(rows, center)
+                markers[-1]['timestamp_interval_ms_exact'] = [ratio(times_by_frame[r['frame_id']]) for r in (a,b)]
+                band = _crossing_band(rows, center, times_by_frame)
+                markers[-1]['crossing_band_ms'] = [float(v) for v in band] if band else None
+                if band:
+                    markers[-1]['crossing_band_ms_exact'] = [ratio(v) for v in band]
     if observed_meter:
         hypotheses, gaps, unplaced, reasons = observed_barline_beats(markers, period)
         phase = None

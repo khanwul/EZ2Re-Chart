@@ -199,7 +199,8 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         write_json(root / reference_ref, references)
         barline_ref = 'artifacts/barline-grid.json'
         report("timing: inferring barline grid")
-        barlines = infer_barline_grid(observations, motion, song.bpm, song.measure_beats, observed_meter=picture_output)
+        barlines = infer_barline_grid(observations, motion, song.bpm, song.measure_beats,
+                                      observed_meter=picture_output, capture=capture)
         write_json(root / barline_ref, barlines)
         calibration_grid, calibration_grid_ref = barlines, barline_ref
         if picture_output and (song.relative_beats or song.spatial_calibration):

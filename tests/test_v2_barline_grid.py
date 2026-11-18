@@ -39,6 +39,25 @@ def infer(**kwargs):
 
 
 class BarlineGridTest(unittest.TestCase):
+    def test_observed_meter_includes_a_grid_beat_on_an_exact_pts_boundary(self):
+        obs, mov, clock = recording(chunk_size=132)
+        chunk, = obs.chunks()
+        frames = clock['frame_id']
+        times = np.array([float(F(int(f) * 32, 3)) for f in frames])
+        chunk['timestamp_ms'] = clock['timestamp_ms'] = times
+        capture = SimpleNamespace(id='capture', manifest={'metadata': {
+            'first_pts': 17, 'first_time_base': [1, 3000]}},
+            chunks=lambda: iter([{'frame_id': frames, 'pts': frames*32 + 17,
+                                  'time_base': np.tile([1, 3000], (len(frames), 1)),
+                                  'fps_fallback': np.zeros(len(frames), dtype=bool),
+                                  'timestamp_ms': times}]))
+        obs.manifest['key']['parents'] = [capture.id]
+        with patch('ez2rc.v2.barline_grid.timeline', return_value=clock):
+            grid = infer_barline_grid(obs, mov, '117.1875', None, observed_meter=True, capture=capture)
+        # 48 frame steps between the end of the first crossing and the start
+        # of the next are exactly 512 ms, one beat at the supplied tempo.
+        self.assertEqual(grid['barline_beats'][:2], [[0, 1], [1, 1]])
+
     def test_first_line_and_numbering_without_judgment_clock_or_note_labels(self):
         result=infer()
         self.assertEqual(result['status'],'supported')
