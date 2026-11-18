@@ -13,6 +13,7 @@ import zlib
 import cv2
 import numpy as np
 
+from .chart_layout import COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL, chart_columns, number_rail_width
 from .contracts import read_ratio
 from .draft import change_note
 
@@ -111,7 +112,7 @@ def witness_time(note):
     return None
 
 
-def label(canvas, text, x, y, color=(35, 43, 55), size=.48):
+def label(canvas, text, x, y, color=(208, 214, 222), size=.48):
     cv2.putText(canvas, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, 1, cv2.LINE_AA)
 
 
@@ -137,11 +138,10 @@ def chart_strips(draft, items):
     lanes = draft['metadata']['lane_count']
     measure = draft['projection'].get('measure_beats')
     measure = read_ratio(measure) if measure is not None else None
-    span = measure * 4 if measure is not None else Fraction(16)
+    span = measure * COLUMN_MEASURES if measure is not None else Fraction(16)
     if span <= 0:
         raise ValueError('invalid measure length')
     lane_width = 36
-    panel = 50 + lanes * lane_width
     grid_top, grid_height = 32, 960
     grid_bottom = grid_top + grid_height
     bottom_start = draft['projection'].get('default_start_reference') == 'template_bottom'
@@ -185,16 +185,9 @@ def chart_strips(draft, items):
             if letter != 'A':
                 place(other, f'{number}{letter}', True, grid_choice=other['id'] == item.note['id'])
 
-    # Keep rests in the score, including the lead-in from beat zero. Extremely
-    # distant manually entered beats get an explicitly labelled jump instead.
-    ordered = []
-    previous = min(0, min(blocks, default=0)) - 1
-    for block in sorted(blocks):
-        if block - previous <= 256:
-            ordered.extend(range(previous + 1, block + 1))
-        else:
-            ordered.append(block)
-        previous = block
+    ordered = list(chart_columns(blocks))
+    rail_width = number_rail_width(blocks, measure)
+    panel = rail_width + lanes * lane_width + 10
 
     # The score runs in one row. Place the review key to its right so that
     # adding measures or review choices extends the image horizontally.
@@ -217,12 +210,12 @@ def chart_strips(draft, items):
     width = max(720, right_edge + 14)
 
     def blank(height):
-        return np.full((height, width, 3), (248, 249, 251), dtype=np.uint8)
+        return np.full((height, width, 3), (6, 8, 11), dtype=np.uint8)
 
     header = blank(70)
     label(header, f'{draft["bpm"]} BPM   |   {len(draft["notes"])} notes   |   {len(items)} to check',
           14, 28, size=.7)
-    label(header, 'Read upwards, then move right.   M = measure' if measure else
+    label(header, 'Read upwards, then move right.' if measure else
           'Read upwards, then move right.   Scale: beats', 14, 54)
     if phase:
         label(header, f'Auto-start display shift: {float(-phase):+.4f} beat', 370, 54)
@@ -233,7 +226,7 @@ def chart_strips(draft, items):
         strip = blank(height)
         for column, block in enumerate(ordered):
             base = block * span
-            left = column * panel + 43
+            left = column * panel + 3 + rail_width
             right = left + lanes * lane_width
 
             def y(beat):
@@ -241,8 +234,9 @@ def chart_strips(draft, items):
 
             for lane in range(lanes):
                 x = left + lane * lane_width
-                shade = (27, 32, 40) if lane % 2 == 0 else (37, 44, 54)
+                shade = LANE_FILLS[lane % 2]
                 cv2.rectangle(strip, (x, grid_top), (x+lane_width-1, grid_bottom), shade, -1)
+                cv2.line(strip, (x, grid_top), (x, grid_bottom), (54, 60, 68))
                 label(strip, str(lane+1), x+12, grid_top-10, size=.48)
 
             # Keep guides for occupied subdivisions between quarter-beat lines.
@@ -262,12 +256,18 @@ def chart_strips(draft, items):
                 for row in rows:
                     cv2.line(strip, (left, row), (right-1, row), color)
             major = measure or Fraction(4)
-            for index in range(4):
+            rail = strip[:, left-rail_width:left]
+            cv2.rectangle(rail, (0, grid_top), (rail_width-1, grid_bottom), MEASURE_RAIL, -1)
+            for index in range(COLUMN_MEASURES):
                 beat = base + index*major
                 position = y(beat)
-                caption = f'M{beat//major+1}' if measure else str(beat)
-                label(strip, caption, left-42, position-4, size=.42)
+                caption = str(beat//major+1) if measure else str(beat)
+                label_y = (position + y(beat + major)) // 2 if measure else position - 9
+                (w, h), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)
+                label(rail, caption, (rail_width-w)//2, label_y+h//2, (245, 247, 250), .4)
+                cv2.line(rail, (0, position), (rail_width-1, position), (185, 191, 200))
                 cv2.line(strip, (left, position), (right-1, position), (158, 168, 180))
+            cv2.line(rail, (0, grid_top), (rail_width-1, grid_top), (185, 191, 200))
             cv2.line(strip, (left, grid_top), (right-1, grid_top), (158, 168, 180))
 
             markers = defaultdict(list)
@@ -275,19 +275,19 @@ def chart_strips(draft, items):
                 x = left + lane * lane_width + 1
                 top = y(min(base+span, end)) if end is not None else grid_top
                 bottom = y(max(base, start)) if start is not None else grid_bottom
-                color = (74, 197, 245) if lane % 2 else (232, 238, 247)
+                color = KEY_COLORS[lane % 2]
                 if tag:
                     color = (106, 226, 208) if alternative else (255, 199, 86)
                 if start is not None and end is not None:
                     body = tuple(round(channel * .72) for channel in color)
-                    cv2.rectangle(strip, (x+1, top), (x+lane_width-4, bottom), body,
+                    cv2.rectangle(strip, (x+5, top), (x+lane_width-8, bottom), body,
                                   1 if alternative else -1)
                 for point, is_tail in ((start, False), (end, True)):
                     if point is not None and base <= point <= base+span:
                         position = y(point)
                         # Paint caps inward so a short hold ends at its observed row.
-                        cap_top = position if is_tail else max(top, position-6)
-                        cap_bottom = min(bottom, position+6) if is_tail else position
+                        cap_top = position if is_tail else max(top, position-3)
+                        cap_bottom = min(bottom, position+3) if is_tail else position
                         cv2.rectangle(strip, (x, cap_top), (x+lane_width-3, cap_bottom),
                                       color, 1 if alternative else -1)
                         if tag:

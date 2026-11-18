@@ -16,6 +16,25 @@ from test_v2_barline_pipeline import marked_video
 
 
 class PictureTest(unittest.TestCase):
+    def test_measure_numbers_fit_the_rail_without_prefixes(self):
+        from unittest.mock import patch
+        from ez2rc.v2.picture import label
+
+        for beat, first, width in ((0, 1, 15), (-16, -3, 23), (16000, 4001, 39)):
+            with self.subTest(beat=beat):
+                note = {'id': 'tap', 'lane': 0, 'start_beat': [beat, 1], 'end_beat': None}
+                draft = {'metadata': {'lane_count': 5}, 'bpm': '120',
+                         'projection': {'measure_beats': [4, 1]}, 'notes': [note]}
+                with patch('ez2rc.v2.picture.label', wraps=label) as draw:
+                    _, score = chart_strips(draft, {})
+                labels = [call.args for call in draw.call_args_list if call.args[0].shape[1] < score.shape[1]]
+                self.assertEqual([args[1] for args in labels], [str(i) for i in range(first, first + 4)])
+                for rail, text, x, *_ in labels:
+                    text_width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)[0][0]
+                    self.assertEqual(rail.shape[1], width)
+                    self.assertGreater(x, 0)
+                    self.assertLess(x + text_width, width)
+
     def test_long_chart_continues_to_the_right_after_eight_columns(self):
         # Beat 129 belongs one beat above the bottom of the ninth four-measure column.
         draft = {'metadata': {'lane_count': 5}, 'bpm': '120',
@@ -28,6 +47,7 @@ class PictureTest(unittest.TestCase):
         bars_across = (score[start] == (158, 168, 180)).all(axis=1)
         starts = np.flatnonzero(bars_across & ~np.roll(bars_across, 1))
         self.assertEqual(len(starts), 9)
+        self.assertEqual(starts[0] - 3, 23)  # Room for the two digits in measure 36.
         grid = score[:, starts[-1]]
         for offset in (15, 30, 45):
             np.testing.assert_array_equal(grid[start - offset], (73, 83, 96))
@@ -81,6 +101,15 @@ class PictureTest(unittest.TestCase):
         self.assertTrue(cap[lines[15]])
         self.assertFalse(cap[lines[15]-1])
         self.assertTrue(cap[lines[17]+1:lines[16]].any())
+        # The hold body sits inside both edges of its cap.
+        cap_width = (score[lines[12]] == (232,238,247)).all(axis=1).sum()
+        body_width = (score[lines[13]] == (167,171,178)).all(axis=1).sum()
+        self.assertGreater(body_width, 0)
+        self.assertLess(body_width, cap_width)
+        # Each measure has a light number centered in its gray gutter.
+        for beat in range(0, 48, 12):
+            center = (lines[beat] + lines[beat+12]) // 2
+            self.assertTrue((score[center-6:center+7, 3:18] > 210).all(axis=2).any())
 
     def test_legacy_display_phase_applies_only_to_automatic_starts(self):
         from fractions import Fraction
@@ -151,7 +180,7 @@ class PictureTest(unittest.TestCase):
         first, later, next_column = [ys[xs == group[0]].min() for group in groups]
         self.assertGreater(first, later)
         self.assertEqual(next_column, later)  # Both notes are three beats into their column.
-        ys, xs = np.where(np.all(score == (53,142,176), axis=2))
+        ys, xs = np.where(np.all(score == (30,104,184), axis=2))
         columns = np.split(np.unique(xs), np.where(np.diff(np.unique(xs))>1)[0]+1)
         self.assertEqual(len(columns), 2)
         self.assertLess(ys[xs == columns[0][0]].max(), ys[xs == columns[1][0]].min())

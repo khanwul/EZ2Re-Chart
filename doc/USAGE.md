@@ -33,7 +33,7 @@ Follow the three commands in the [quick start](../README.md#quick-start). `init`
 
 Open `chart.png` in the result directory. Read four measures **from bottom to top** in each column, then scroll right. If the measure length is unknown, each column covers 16 beats.
 
-Short bars are taps, and vertical strips are holds. Read a tap or hold start at its bottom edge and a hold end at its top edge. Thin lines mark beats and brighter lines mark measures.
+Short bars are taps, and vertical strips are holds. Read a tap or hold start at its bottom edge and a hold end at its top edge. Grid lines mark beats and measures. Columns show measure numbers starting at 1. The HTML review uses the same reading direction.
 
 For the commands below, run this from the repository root, replacing the path with the directory printed by `extract`.
 
