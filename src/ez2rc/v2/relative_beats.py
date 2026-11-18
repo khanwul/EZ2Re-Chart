@@ -385,7 +385,7 @@ independence assumption. Extrapolation is opt-in and always labelled.
 
 
 def project_relative_beats(observations, movement, decoded, reference, *, measure_beats, rhythm_grid=None,
-                           physical_review=None, draft_tap_anchors=False):
+                           physical_review=None, draft_tap_anchors=False, draft_start_grid=False):
     """Produce relative beat ranges and separate capture ranges for selections.
 
 Scoped offsets are total downward offsets from the detection reference, not
@@ -563,6 +563,9 @@ coordinates into exact chart notes or accepted judgment times.
         raise ValueError('scoped calibration does not bind a localized selected endpoint')
     if shared_line and set(model['endpoints']) - selected_endpoints:
         raise ValueError('coordinate dependence does not bind a selected endpoint')
+    if draft_start_grid and geometry is not None and geometry.status == 'conditional':
+        from .draft_start_grid import refine_draft_starts
+        geometry_diagnostics['draft_start_grid'] = refine_draft_starts(geometry, geometry_points)
     refinement = None
     if geometry is not None and rhythm_grid is not None:
         from .rhythm_refinement import refine_grid

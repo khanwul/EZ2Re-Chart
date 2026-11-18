@@ -11,7 +11,7 @@ from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-8'
+VERSION = 'screen-coordinate-draft-9'
 
 
 def apply_start_grid(note):
@@ -20,6 +20,8 @@ def apply_start_grid(note):
     if not point or point['beat_range'] is None:
         return
     ticks = sorted(grid_candidate_ticks(point['beat_range'], DRAFT_GRID))
+    if 'shared_candidate_ticks' in point:
+        ticks = [tick for tick in ticks if tick in point['shared_candidate_ticks']]
     resolution = DRAFT_GRID.ticks_per_beat
     if note['end_beat'] is not None:
         end_tick = read_ratio(note['end_beat']) * resolution
@@ -40,6 +42,8 @@ def draft_timing_issues(draft):
         issues.append('The recording does not establish unique beat positions for the measure lines.')
     elif projection['origin_issues']:
         issues.append('The first barline or measure numbering could not be established.')
+    if (projection.get('shared_start_grid') or {}).get('status') == 'conflict':
+        issues.append('The start grid conflicts with the shared screen coordinates.')
     if projection['geometry_issues']:
         issues.append('Template geometry is unavailable for placing notes.')
     for left, right in projection.get('uncertain_measure_spans', []):
@@ -118,7 +122,8 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     reference = spatial_reference(barlines, calibration)
     relative = (project_relative_beats(observations, movement, decoded, reference,
                                       measure_beats=(read_ratio(reference['measure_beats'])
-                                                     if reference['measure_beats'] else None), draft_tap_anchors=True)
+                                                     if reference['measure_beats'] else None), draft_tap_anchors=True,
+                                      draft_start_grid=True)
                 if reference is not None and shapes is not None else None)
     relative_rows = {r['candidate_id']: r for r in relative['candidates']} if relative else {}
     origin_issues = list(barlines['reasons'])
@@ -163,6 +168,8 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             values[side] = ratio((read_ratio(domain['lower'])+read_ratio(domain['upper']))/2) if domain else None
             raw = endpoint_data.get(candidate[side])
             evidence[side] = ({**raw, 'beat_range': domain, 'estimate': values[side],
+                               **({'shared_candidate_ticks': point['draft_start_ticks']}
+                                  if point and 'draft_start_ticks' in point else {}),
                                'reasons': point['reasons'] if point else ['no_selected_coordinate_solution']}
                               if raw else None)
         if candidate['pixel_status'] != 'resolved':
@@ -203,10 +210,11 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             'scale_px_per_beat': scale, 'scale_basis': 'shared_observation_geometry',
             'geometry_status': geometry.get('status', 'unavailable'),
             'draft_tap_anchors': geometry.get('draft_tap_anchors', []),
+            'shared_start_grid': geometry.get('draft_start_grid'),
             'geometry_issues': geometry_issues,
             'localization_assumption_px': error, 'unprocessed_motion': gaps, 'tail_beat_extension': [0, 1],
             'limitations': ['All automatic values need video review; missing notes may be undetected.',
                            'Screen landmarks are not verified musical timing.',
-                           'Automatic starts require a unique grid candidate within the measured range. '
+                           'Automatic starts require one remaining grid candidate compatible with measured coordinates. '
                            'Hold ends use the midpoint of their own range.',
                            'The localization allowance is a draft assumption, not a certified error bound.']}

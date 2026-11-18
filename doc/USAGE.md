@@ -41,7 +41,7 @@ Short bars are taps, and vertical strips are holds. Read a tap or hold start at 
 
 Tap and hold starts use multiples of 1/48 or 1/64 of a beat. These two grids include halves, thirds and their supported subdivisions. Both share a scale of 192 ticks per beat. For example, ticks 3 and 4 represent 1/64 and 1/48. A position shared by both grids counts once.
 
-The draft adopts a start when exactly one position falls in the range measured from the video. Read the fraction to the right of the lanes. Notes in a chord share a label. Several possible positions appear together as numbered choices. A start with no candidate stays marked `?`. Hold ends retain their video estimate. The draft keeps the measured range and midpoint for inspection. Reconstruct an older run to apply the start grid to its observations.
+The draft adopts a start when one grid position remains within its measured range. Starts with a single grid position and resolved shapes can constrain other starts through shared screen coordinates and numbered measure lines. Read the fraction to the right of the lanes. Notes in a chord share a label. Several possible positions appear together as numbered choices. A start with no candidate stays marked `?`. Hold ends retain their video estimate. The draft keeps the measured range and midpoint for inspection. Reconstruct an older run to apply the start grid to its observations.
 
 For the commands below, run this from the repository root, replacing the path with the directory printed by `extract`.
 

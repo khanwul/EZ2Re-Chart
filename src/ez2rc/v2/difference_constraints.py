@@ -119,7 +119,7 @@ class DifferenceGraph:
                 reverse[v][u] = value
         self.compiled = forward,reverse,scale
 
-    def distances(self, start, *, reverse=False):
+    def distances(self, start, *, reverse=False, stop_at=()):
         """Tight upper differences to/from a node, with absent paths omitted."""
         if self.potentials is None:
             self.prepare()
@@ -130,19 +130,19 @@ class DifferenceGraph:
         forward,backward,scale = self.compiled
         p = self.potentials
         graph = backward if reverse else forward
-        if reverse:
-            p = {u: -v for u, v in p.items()}
         costs, heap = {start: 0}, [(0, start)]
         while heap:
             cost, u = heappop(heap)
-            if cost != costs[u]:
+            if cost != costs[u] or (u != start and u in stop_at):
                 continue
             for v, step in graph[u].items():
                 new = cost + step
                 if v not in costs or new < costs[v]:
                     costs[v] = new
                     heappush(heap, (new, v))
-        return {v: Fraction(cost,scale) - p[start] + p[v] for v, cost in costs.items()}
+        sign = -1 if reverse else 1
+        return {v: Fraction(cost,scale) + sign * (p[v] - p[start]) for v, cost in costs.items()
+                if not stop_at or v in stop_at}
 
     def interval(self, left, right):
         forward = self.distances(left)
