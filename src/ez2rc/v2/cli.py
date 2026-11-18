@@ -133,7 +133,11 @@ def main(argv=None):
                                  progress=progress, picture_output=True)
         run = read_json(root / "run.json", "ez2rc.run", schema_versions=(1, 2))
         result_dir = root.parent if root.name == '.ez2rc' else root
-        print(f"{run['status']}: {result_dir}")
+        draft_issues = run.get('draft', {}).get('timing_issues')
+        if draft_issues is not None and not run['failure']:
+            print(f"Draft {run['status']}: {result_dir}")
+        else:
+            print(f"{run['status']}: {result_dir}")
         if 'picture' in run:
             from .picture import IMAGE_NAME
             print(f"Chart image: {result_dir / IMAGE_NAME}")
@@ -156,9 +160,13 @@ def main(argv=None):
         if run["failure"]:
             print(f"error [{run['failure']['stage']}]: {run['failure']['message']}", file=sys.stderr)
         elif run["status"] == "partial":
-            pending = ", ".join(name for name, stage in run["stages"].items()
-                                if stage["status"] == "pending")
-            print(f"Partial results saved; pending stages: {pending}.")
+            if draft_issues is None:
+                pending = ", ".join(name for name, stage in run["stages"].items()
+                                    if stage["status"] == "pending")
+                print(f"Partial results saved; pending stages: {pending}.")
+            else:
+                for issue in draft_issues:
+                    print(issue)
         return code
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

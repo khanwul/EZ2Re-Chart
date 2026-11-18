@@ -79,7 +79,7 @@ uv run ez2rc reconstruct my-song/song.toml \
 | --- | --- |
 | Missing template or alignment failure | Check the PNG names and dimensions above, then check the panel and judgment line in the opening frames. |
 | Irregular frame interval warning | The extractor keeps the original timestamps. Inspect notes near gaps against the recording. |
-| `partial` (exit `2`) | The draft is available. With the bundled profile, timing calibration is still unverified. |
+| `Draft partial` (exit `2`) | Check the printed reasons and numbered choices. The first barline may be ambiguous, a note may lack a beat position, or the interval may have no detected notes. |
 | Error (exit `1`) | Read the terminal error. If a run directory exists, `.ez2rc/run.json` records the failed stage and reason. |
 
-For a command's options, append `--help`, for example `uv run ez2rc extract --help`. A `complete` run (exit `0`) means the pipeline resolved its events and timing. Missed notes can still require review.
+For a command's options, append `--help`, for example `uv run ez2rc extract --help`. `Draft complete` (exit `0`) means the draft places the detected notes relative to the first barline and has no outstanding review items. This works without game timing calibration. Check the recording for missed notes.

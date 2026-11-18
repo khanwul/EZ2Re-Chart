@@ -2,6 +2,7 @@
 from contextlib import redirect_stdout
 from copy import deepcopy
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -214,7 +215,7 @@ class PictureTest(unittest.TestCase):
         self.assertLess(ys[xs == columns[0][0]].max(), ys[xs == columns[1][0]].min())
 
     def test_compact_extract_and_reconstruct(self):
-        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             song = marked_video(root, longnotes=True)
             for command in ('extract', 'reconstruct'):
@@ -222,8 +223,15 @@ class PictureTest(unittest.TestCase):
                 args = [command, str(song), '--output', str(out), '--no-progress']
                 if command == 'reconstruct':
                     args.extend(['--observations', str(result / '.ez2rc/artifacts/observations')])
-                self.assertIn(main(args), (0, 2))
+                with redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(main(args), 0, output.getvalue())
+                self.assertIn('Draft complete:', output.getvalue())
                 result = next(out.glob('*/*/*/' + IMAGE_NAME)).parent
+                run = json.loads((result/'.ez2rc/run.json').read_text())
+                self.assertEqual(run['status'], 'complete')
+                self.assertEqual(run['stages']['timing']['status'], 'complete')
+                self.assertEqual(run['stages']['timing']['confirmed_chart_status'], 'partial')
+                self.assertEqual(run['picture']['pending_choices'], 0)
                 names = {p.name for p in result.iterdir()}
                 from ez2rc.v2.photos import photo_folder
                 folder = photo_folder(read_draft(result/'.ez2rc/draft.json'))
@@ -239,6 +247,16 @@ class PictureTest(unittest.TestCase):
                 self.assertNotEqual(photos[0].read_bytes(), photos[1].read_bytes())
                 self.assertIsNotNone(cv2.imread(str(result / IMAGE_NAME)))
                 self.assertFalse((result / '.ez2rc/report.html').exists())
+
+    def test_missing_barline_origin_leaves_partial_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            song = marked_video(root, bar_entries=())
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(main(['extract', str(song), '--output', str(root/'out'), '--no-progress']), 2)
+            self.assertIn('Draft partial:', output.getvalue())
+            self.assertIn('first barline', output.getvalue())
+            self.assertIn('Notes with missing beat positions: 6.', output.getvalue())
 
     def test_review_question_identifies_the_disputed_endpoint_and_action(self):
         from ez2rc.v2.photos import review_question, _answers

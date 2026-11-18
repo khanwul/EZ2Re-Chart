@@ -16,6 +16,23 @@ from .window import HOLD_REASON
 VERSION = 'screen-coordinate-draft-5'
 
 
+def draft_timing_issues(draft):
+    projection = draft['projection']
+    issues = []
+    if projection['origin_issues']:
+        issues.append('The first barline or measure numbering could not be established.')
+    if projection['geometry_issues']:
+        issues.append('Template geometry is unavailable for placing notes.')
+    notes = draft['notes']
+    if not notes:
+        issues.append('No notes were detected in the requested interval.')
+    missing = sum(n['start_beat'] is None or (n['type'] == 'longnote' and n['end_beat'] is None)
+                  for n in notes)
+    if missing:
+        issues.append(f'Notes with missing beat positions: {missing}.')
+    return issues
+
+
 def draft_endpoint_offset(profile, kind, template_height=None):
     """Pixel offset from the matched top row to the draft's timing landmark."""
     overrides = profile.get('draft_offsets_px', {})

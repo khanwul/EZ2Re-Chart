@@ -17,7 +17,7 @@ from ez2rc.v2.runner import execute
 from test_v2_timing_resolver import moving_taps
 
 
-def marked_video(root, *, longnotes=False, translated=(0, 0)):
+def marked_video(root, *, longnotes=False, translated=(0, 0), bar_entries=(6,26,46,66,86,106)):
     song=moving_taps(root)
     text=song.read_text().replace('bpm = "191.910"','bpm = "150"\nmeasure_beats = [1, 1]')
     song.write_text(text)
@@ -31,7 +31,7 @@ def marked_video(root, *, longnotes=False, translated=(0, 0)):
         stream.time_base=stream.codec_context.time_base=F(1,1000)
         for frame_id in range(126):
             image=np.zeros((96,96,3),np.uint8);image[70:76,20:61]=(220,120,20)
-            for entry in (6,26,46,66,86,106):
+            for entry in bar_entries:
                 y=3*(frame_id-entry)
                 if 0<=y<65:image[y,20:60]=70
             for lane,q in ((0,120),(1,135),(0,180),(1,255),(0,300),(1,375)):

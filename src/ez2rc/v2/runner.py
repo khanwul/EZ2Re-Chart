@@ -1,4 +1,4 @@
-"""Run lifecycle. Visual inference without interval/timing decode stays partial."""
+"""Run lifecycle for the video draft and the calibrated automatic chart."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from .physical_review import load_physical_review
 from .calibration_verification import load_calibration_verification
 from .window import song_window, has_context, analysis_scope, scope_events
 from .draft import create_draft, save_draft
-from .draft_projection import project_draft
+from .draft_projection import draft_timing_issues, project_draft
 from .review import write_review
 
 EXIT_COMPLETE, EXIT_PARTIAL, EXIT_FAILED = 0, 2, 1
@@ -399,9 +399,17 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
                                    "decode": decoded.manifest["metadata"]["event_status_counts"],
                                    "position_calibration": meta.get('position_calibration'),
                                    "endpoint_calibration": "unverified" if any(c["status"] != "verified" for c in profile_data["calibration"].values()) else "verified"})
-        run["status"] = chart.status
+        if picture_output:
+            # The CLI delivers the video draft. The calibrated chart has its own result.
+            issues = draft_timing_issues(draft)
+            run['draft']['timing_issues'] = issues
+            run['stages']['timing'].update(status='pending' if issues else 'complete',
+                                           confirmed_chart_status=chart.status)
+            run['status'] = 'partial' if issues or run['picture']['pending_choices'] else 'complete'
+        else:
+            run['status'] = chart.status
         run["stages"]["export"] = {"status": "complete", "schema_version": chart_schema(chart)}
-        result = EXIT_COMPLETE if chart.status == "complete" else EXIT_PARTIAL
+        result = EXIT_COMPLETE if run["status"] == "complete" else EXIT_PARTIAL
     except (OSError, ValueError, RuntimeError) as exc:
         if isinstance(exc, CaptureError):
             active = "capture"
