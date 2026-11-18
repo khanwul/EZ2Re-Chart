@@ -40,15 +40,18 @@ def chart_view(draft):
         for lane in range(lanes):
             x = 52 + lane * 34
             pieces.append(f'<path d="M{x} {top}v540" stroke="#465167"/><text x="{x+17}" y="22" text-anchor="middle">{lane+1}</text>')
-        ticks = [Fraction(i) for i in range(math.ceil(base), math.ceil(base+span))]
+        ticks = [Fraction(i, 4) for i in range(math.ceil(base * 4), math.ceil((base + span) * 4))]
         if measure:
             ticks = sorted(set(ticks + [base + i*measure for i in range(4)]))
         for beat in ticks:
             y = top + float(beat-base)*scale
             bar = measure is not None and beat % measure == 0
-            label = f'M{int(beat/measure)+1}' if bar else f'{float(beat):g}'
-            pieces.append(f'<path d="M52 {y:g}h{lanes*34}" stroke="{ "#c3cddb" if bar else "#394558"}"/>'
-                          f'<text x="47" y="{y+4:g}" text-anchor="end">{label}</text>')
+            whole = beat.denominator == 1
+            color = '#c3cddb' if bar else '#394558' if whole else '#2c3748'
+            pieces.append(f'<path d="M52 {y:g}h{lanes*34}" stroke="{color}"/>')
+            if bar or whole:
+                label = f'M{int(beat/measure)+1}' if bar else f'{float(beat):g}'
+                pieces.append(f'<text x="47" y="{y+4:g}" text-anchor="end">{label}</text>')
         for index, note, start, end in entries:
             x = 56 + note['lane']*34
             y = top + float(max(start, base)-base)*scale

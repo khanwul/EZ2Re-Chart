@@ -226,22 +226,22 @@ def chart_strips(draft, items):
                 cv2.rectangle(strip, (x, grid_top), (x+lane_width-1, grid_bottom), shade, -1)
                 label(strip, str(lane+1), x+8, grid_top-10, size=.4)
 
-            # Show a quieter guide at occupied subdivisions. Major lines win
-            # if a nearby subdivision rounds to the same pixel.
+            # Keep guides for occupied subdivisions between quarter-beat lines.
             subdivisions = {p for _, start, end, _, _ in blocks[block] for p in (start, end)
-                            if p is not None and base <= p < base+span and p.denominator in (2,3,4,6,8,12,16)}
+                            if p is not None and base <= p < base+span and p.denominator in (3,6,8,12,16)}
             for point in subdivisions:
                 cv2.line(strip, (left, y(point)), (right-1, y(point)), (73, 83, 96))
-            # Once beats fall less than a pixel apart, successive projected
-            # rows touch or coincide. Paint their union without iterating an
-            # arbitrarily large user-supplied measure length.
-            first_beat, end_beat = math.ceil(base), math.ceil(base+span)
-            if span > grid_bottom-grid_top:
-                beat_rows = range(y(end_beat-1), y(first_beat)+1)
-            else:
-                beat_rows = (y(beat) for beat in range(first_beat, end_beat))
-            for row in beat_rows:
-                cv2.line(strip, (left, row), (right-1, row), (106, 118, 133), 1)
+            # Draw stronger lines last when several ticks share a pixel.
+            for division, color in ((4, (73, 83, 96)), (1, (106, 118, 133))):
+                first = math.ceil(base * division)
+                stop = math.ceil((base + span) * division)
+                if span * division > grid_bottom - grid_top:
+                    # Subpixel ticks cover consecutive rows even for very long measures.
+                    rows = range(y(Fraction(stop - 1, division)), y(Fraction(first, division)) + 1)
+                else:
+                    rows = (y(Fraction(tick, division)) for tick in range(first, stop))
+                for row in rows:
+                    cv2.line(strip, (left, row), (right-1, row), color)
             major = measure or Fraction(4)
             for index in range(4):
                 beat = base + index*major

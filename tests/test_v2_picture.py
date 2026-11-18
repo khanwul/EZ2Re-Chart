@@ -33,6 +33,11 @@ class PictureTest(unittest.TestCase):
         lines = np.flatnonzero(is_beat | is_measure)[::-1]
         self.assertEqual(len(lines), 49)
         self.assertTrue(is_measure[lines[::12]].all())
+        # Every beat has three quieter guides, including beats during rests.
+        is_quarter = (empty_lane == (73,83,96)).all(axis=1)
+        expected = [lines[0] - round((lines[0] - lines[-1]) * tick / 192)
+                    for tick in range(192) if tick % 4]
+        np.testing.assert_array_equal(np.flatnonzero(is_quarter)[::-1], expected)
         # The cap is wider than the body. Both ends face inward.
         cap = (score[:,44] == (232,238,247)).all(axis=1)
         for beat in (1,12):

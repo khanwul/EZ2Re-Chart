@@ -26,6 +26,15 @@ class Elements(HTMLParser):
 
 
 class ReviewChartTest(unittest.TestCase):
+    def test_quarter_guides_align_to_beats_in_a_fractional_panel(self):
+        # This panel starts at beat 5/3. The measure line at 2.5 takes precedence.
+        html = chart_view(draft([note('tap', [2, 1])], [5, 12]))
+        tags = Elements(html).elements
+        guides = [a['d'] for t, a in tags if t == 'path' and a['stroke'] == '#2c3748']
+        self.assertEqual(guides, [f'M52 {y}h170' for y in (61, 223, 385, 547)])
+        labels = [a['y'] for t, a in tags if t == 'text' and a['x'] == '47']
+        self.assertEqual(len(labels), 6)  # Four measures and two whole beats.
+
     def test_short_hold_before_a_measure_stays_inside_both_endpoints(self):
         html = chart_view(draft([note('short', [159,40], [399,100])], [4,1]))
         marks = [a for t,a in Elements(html).elements if t == 'rect' and a['width'] in ('14','26')]
