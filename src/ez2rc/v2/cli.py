@@ -3,10 +3,11 @@
 import argparse
 from pathlib import Path
 import sys
+import shlex
 
 from .runner import EXIT_FAILED, execute
 from .storage import read_json
-from .draft import read_draft, save_draft, change_note, parse_beat, describe
+from .draft import draft_lock, read_draft, save_draft, change_note, parse_beat, describe
 
 
 def main(argv=None):
@@ -22,6 +23,17 @@ def main(argv=None):
     review = commands.add_parser('review', help='write a local video review table')
     review.add_argument('draft', type=Path)
     review.add_argument('--output', type=Path, required=True)
+    chart = commands.add_parser('chart', help='refresh the PNG from a saved run')
+    choose = commands.add_parser('choose', help='apply a numbered choice from the PNG')
+    for command in (chart, choose):
+        command.add_argument('--run', type=Path, default=Path('.'), help='result directory (default: here)')
+    choose.add_argument('number', type=int)
+    choose.add_argument('letter', nargs='?', help='letter in the picture, or X to remove')
+    choose.add_argument('--start', help='supply a start beat')
+    choose.add_argument('--end', help='supply a long-note end beat')
+    choose.add_argument('--frame', type=Path, metavar='PNG', help='save the original frame for this option')
+    choose.add_argument('--side', choices=('start', 'end'))
+    choose.add_argument('--video', type=Path, help='original recording in a new location')
     frame = commands.add_parser('frame', help='save a video witness or region as PNG')
     frame.add_argument('draft', type=Path)
     selection = frame.add_mutually_exclusive_group(required=True)
@@ -60,6 +72,8 @@ def main(argv=None):
                                  help="observation cache directory, or run/artifacts/observations")
     args = parser.parse_args(argv)
     try:
+        if args.command in ('chart', 'choose'):
+            return picture_command(args)
         if args.command == 'init':
             from .setup import initialize
             song = initialize(args.directory, video=args.video, bpm=args.bpm, templates=args.templates,
@@ -112,12 +126,21 @@ def main(argv=None):
             code, root = execute(args.config, output_root=args.output,
                                  cache_root=getattr(args, "cache_root", None),
                                  observation_cache=getattr(args, "observations", None),
-                                 progress=None if args.no_progress else progress)
+                                 progress=None if args.no_progress else progress, picture_output=True)
         finally:
             progress.finish()
         run = read_json(root / "run.json", "ez2rc.run", schema_versions=(1, 2))
-        print(f"{run['status']}: {root}")
-        if 'draft' in run:
+        result_dir = root.parent if root.name == '.ez2rc' else root
+        print(f"{run['status']}: {result_dir}")
+        if 'picture' in run:
+            from .picture import IMAGE_NAME
+            print(f"채보 그림: {result_dir / IMAGE_NAME}")
+            count = run['picture']['pending_choices']
+            print(f"번호가 붙은 확인 항목 {count}개")
+            if count:
+                print(f"cd {shlex.quote(str(result_dir))}")
+                print("ez2rc choose 1     # 첫 항목의 선택지 보기")
+        elif 'draft' in run:
             print(f"Editable draft saved: {root / 'draft.json'} ({run['draft']['notes']} notes; video review required).")
         for warning in run.get("warnings", []):
             print(f"warning: {warning['irregular_interval_count']} irregular frame interval(s). "
@@ -132,3 +155,59 @@ def main(argv=None):
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILED
+
+
+def picture_command(args):
+    from .picture import IMAGE_NAME, beat_text, decide, pending_items, witness_time, write_picture
+    directory = args.run
+    path = directory / '.ez2rc' / 'draft.json'
+    if not path.is_file():
+        path = directory / 'draft.json'
+    if not path.is_file():
+        raise ValueError('결과 폴더에서 실행하거나 --run 옵션으로 결과 폴더를 지정하세요.')
+    image = directory / IMAGE_NAME
+    if args.command == 'chart':
+        with draft_lock(path):
+            write_picture(image, read_draft(path))
+        print(image)
+        return 0
+    draft = read_draft(path)
+    item = pending_items(draft).get(args.number)
+    if item is None:
+        raise ValueError('이 번호로 선택할 항목이 없습니다. 현재 채보 그림을 확인하세요.')
+    letter = (args.letter or 'A').upper()
+    if args.frame:
+        from .review import export_frame
+        note = item.options.get(letter)
+        if note is None:
+            raise ValueError('그림에 표시된 후보 문자를 입력하세요.')
+        evidence = note['evidence']
+        side = args.side or next((s for s in ('start', 'end') if (evidence.get(s) or {}).get('witnesses')), 'start')
+        if not (evidence.get(side) or {}).get('witnesses'):
+            raise ValueError('이 위치에는 저장된 원본 프레임 근거가 없습니다.')
+        export_frame(draft, args.frame, identity=note['id'], side=side, video=args.video, analysis_dir=path.parent)
+        print(args.frame)
+        return 0
+    if args.side or args.video:
+        raise ValueError('--side와 --video는 --frame과 함께 사용하세요.')
+    if not args.letter:
+        print(f'{item.number}번 · {item.note["lane"]+1}레인')
+        for key, note in item.options.items():
+            start = beat_text(note['start_beat'])
+            if note['type'] == 'tap':
+                action = f'일반 노트 · {start}박'
+            else:
+                action = f"롱노트 · 시작 {start}박 · 끝 {beat_text(note['end_beat'])}박"
+            seconds = witness_time(note)
+            when = f' · 원영상 {seconds:.3f}초' if seconds is not None else ''
+            print(f'{key}  {action}{when}')
+        print('X  노트 삭제')
+        frame_letter = next((key for key, row in item.options.items() if witness_time(row) is not None), None)
+        if frame_letter:
+            print(f'원본 프레임 저장: ez2rc choose {item.number} {frame_letter} --frame 확인.png')
+        return 0
+    fields = {side + '_beat': parse_beat(getattr(args, side)) for side in ('start', 'end') if getattr(args, side) is not None}
+    edited = decide(draft, item, letter, fields)
+    save_draft(path, edited, expected_sha=draft['document_sha256'], picture_path=image)
+    print(f'{item.number}{letter} 저장 · 남은 항목 {len(pending_items(edited))}개 · {image}')
+    return 0

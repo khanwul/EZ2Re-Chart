@@ -13,9 +13,8 @@ accumulation, and tap/long-note interval decoding are implemented. Timing
 calibration and musical origin inference are still pending.
 
 Current successful runs produce **partial results**, exit with code **2**, and
-leave `chart.json.notes` empty. Inspect the pixel candidates and unresolved
-events in the report; an empty final note list does not mean the video has no
-notes. Complete beat-based chart output is not available yet.
+can still produce a draft picture. Its note positions are estimates for video
+review. Numbered items identify choices about the draft.
 
 The previous implementation and its instructions are preserved under the `v1`
 tag. v2 accepts its own versioned configuration and cache formats.
@@ -82,7 +81,7 @@ Reuse a saved observation cache without decoding the video again:
 
 ```bash
 uv run ez2rc reconstruct config/v2/my-song.toml \
-  --observations "out/<title>/<difficulty>/<run-id>/artifacts/observations" \
+  --observations "out/<title>/<difficulty>/<run-id>/.ez2rc/artifacts/observations" \
   --output out
 ```
 
@@ -100,13 +99,34 @@ again. Motion, fusion, and decode caches are reused when their inputs match.
 
 ## Output
 
-Each attempt creates a new `out/<title>/<difficulty>/<run-id>/` directory:
+Open **채보.png** in the result directory printed by `extract` or `reconstruct`.
+Read each column from bottom to top, then move right. Each column spans four
+measures when the measure length is known, or sixteen beats otherwise. Short
+bars mark taps and filled strips mark holds. Thin solid lines mark each beat,
+with brighter lines at measure boundaries. Read the beat at the bottom edge
+of each tap or hold endpoint.
+Numbers identify notes to check. A is the current note, and other letters show
+competing note interpretations or a pair of possible beat positions found during extraction.
+The key beneath the chart lists the lane and beat for each choice. A question
+mark means that the beat is unknown.
 
-- `run.json`: input/code identities, settings, stage states, and errors.
-- `chart.json`: chart metadata, timing status, and unresolved event references.
-- `report.html`: pixel candidates, alternatives, and unresolved events.
-- `artifacts/events.json`: event states and supporting evidence references.
-- `artifacts/{capture,observations,motion,fusion,decode}/`: stage manifests and caches.
+From that result directory, use the number and letter in the picture:
+
+```bash
+ez2rc choose 3                      # list choices for item 3
+ez2rc choose 3 B --frame check.png  # inspect B's original video frame
+ez2rc choose 3 B                    # apply B and update the PNG
+```
+
+X removes the note. For a missing beat, supply `--start` or `--end` with the
+position you determined. Leaving an item unanswered keeps it for later.
+Remaining items keep their numbers after each edit. The underlying draft and
+analysis files live in `.ez2rc/`. User decisions update the draft. The analysis
+record describes the original extraction.
+
+Use `ez2rc chart --run <result-directory>` to regenerate the PNG, including for
+older runs with a top-level `draft.json`. The same `--run` option works with
+`choose` from outside the result directory.
 
 Reusable stage caches live in `out/.cache/` by default. `extract --cache-root`
 selects another cache root. Exit codes are `0` for complete, `2` for partial,

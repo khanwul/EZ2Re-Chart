@@ -64,12 +64,14 @@ def attach_cache(cache: Cache, destination: Path):
 
 
 def execute(config_path: Path, *, output_root: Path = Path("out"),
-            cache_root: Path | None = None, observation_cache: Path | None = None, progress=None) -> tuple[int, Path]:
+            cache_root: Path | None = None, observation_cache: Path | None = None, progress=None, picture_output=False) -> tuple[int, Path]:
     report = progress or (lambda message: None)
     report("Preparing project")
     song = load_song(config_path)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12]
     root = output_root / safe_component(song.title) / safe_component(song.difficulty) / run_id
+    if picture_output:
+        root = root / ".ez2rc"
     root.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     run = {"format": "ez2rc.run", "schema_version": origin_schema(song.beat_zero_ms), "run_id": run_id, "status": "running",
@@ -341,6 +343,11 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
             allowed_candidates={c['id'] for p in pixel_intervals
                                 for c in (*p['selected_intervals'], *p['alternatives'])},
             analysis_scope=scope)
+        if picture_output:
+            # Retain the two concrete grid interpretations for a binary timing decision.
+            draft_projection['timing_choices'] = {
+                row['candidate_id']: row['note_candidates'] for row in rhythm['candidates']
+                if row['status'] == 'ambiguous' and len(row['note_candidates']) == 2}
         draft = create_draft(draft_projection, asdict(chart.metadata), song.bpm,
                             {'video': str(song.video), 'video_sha256': meta['video_sha256'],
                              'alignment_offset_px': meta.get('alignment_offset_px'),
@@ -351,12 +358,17 @@ def execute(config_path: Path, *, output_root: Path = Path("out"),
         report("export: saving draft")
         save_draft(root / 'draft.json', draft)
         report("export: writing review")
-        write_review(root / 'review.html', draft)
+        if picture_output:
+            from .picture import IMAGE_NAME, write_picture
+            count = write_picture(root.parent / IMAGE_NAME, draft)
+            run['picture'] = {'path': '../' + IMAGE_NAME, 'pending_choices': count}
+        else:
+            write_review(root / 'review.html', draft)
         run['draft'] = {'path': 'draft.json', 'notes': len(draft['notes']),
                         'unresolved': sum(n['status'] == 'unresolved' for n in draft['notes']),
                         'document_sha256': draft['document_sha256']}
         report("export: writing chart artifacts")
-        write_outputs(root, chart, events, observation_ref="artifacts/observations/manifest.json",
+        write_outputs(root, chart, events, html_report=not picture_output, observation_ref="artifacts/observations/manifest.json",
                       motion_ref="artifacts/motion/manifest.json", fusion_ref="artifacts/fusion/manifest.json",
                       decode_ref="artifacts/decode/manifest.json", pixel_intervals=pixel_intervals,
                       time_projection_ref=projection_ref, timing_resolution_ref=resolution_ref,

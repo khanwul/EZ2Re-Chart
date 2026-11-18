@@ -142,7 +142,7 @@ def read_chart(path: Path) -> dict:
 
 
 def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observation_ref: str,
-                  candidates=(), motion_ref=None, fusion_ref=None, decode_ref=None,
+                  candidates=(), html_report=True, motion_ref=None, fusion_ref=None, decode_ref=None,
                   time_projection_ref=None, timing_resolution_ref=None, reference_candidates_ref=None,
                   reference_origin_link_ref=None, origin_adoption_ref=None, beat_ranges_ref=None,
                   endpoint_time_ranges_ref=None, relative_beats_ref=None, relative_beats=None,
@@ -200,6 +200,8 @@ def write_outputs(root: Path, chart: Chart, events: tuple[Event, ...], *, observ
         analysis_scope_ref=analysis_scope_ref,
         pixel_intervals=pixel_intervals,
         pending_stages=chart.pending_stages, candidates=candidates))
+    if not html_report:
+        return
     items = "".join(f"<li id='{escape(e.id, quote=True)}'>Lane {e.lane + 1}: "
                     f"{escape(e.status)} — {escape(e.reason or '')}</li>" for e in chart.unresolved)
     pending = ", ".join(chart.pending_stages)

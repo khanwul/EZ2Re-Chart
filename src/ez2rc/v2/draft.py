@@ -1,9 +1,11 @@
 """Portable editable drafts with atomic saves and replayable user changes."""
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from fractions import Fraction
 import json
 import os
+import tempfile
 from pathlib import Path
 import uuid
 
@@ -93,11 +95,8 @@ def read_draft(path):
     return validate_draft(read_json(Path(path), 'ez2rc.draft'))
 
 
-def save_draft(path, value, *, expected_sha=None):
-    """Lock and compare before replacing; failed writes preserve the old file."""
-    validate_draft(value)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+@contextmanager
+def draft_lock(path):
     lock = path.with_name('.' + path.name + '.lock')
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -105,14 +104,37 @@ def save_draft(path, value, *, expected_sha=None):
         raise ValueError(f'draft is locked by another save: {lock}') from exc
     try:
         os.close(fd)
+        yield
+    finally:
+        lock.unlink()
+
+
+def save_draft(path, value, *, expected_sha=None, picture_path=None):
+    """Lock and compare before replacing; failed writes preserve the old file."""
+    validate_draft(value)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with draft_lock(path):
         if expected_sha is None:
             if path.exists():
                 raise ValueError(f'output already exists: {path}')
         elif not path.is_file() or read_draft(path)['document_sha256'] != expected_sha:
             raise ValueError('draft changed since it was opened; reopen before saving')
-        write_json(path, value)
-    finally:
-        lock.unlink()
+        if picture_path is None and path.name == 'draft.json' and path.parent.name == '.ez2rc' and expected_sha:
+            from .picture import IMAGE_NAME
+            picture_path = path.parent.parent / IMAGE_NAME
+        if picture_path is None:
+            write_json(path, value)
+        else:
+            from .picture import write_picture
+            with tempfile.TemporaryDirectory(dir=picture_path.parent) as tmp:
+                staged = Path(tmp) / 'chart.png'
+                write_picture(staged, value)
+                write_json(path, value)
+                try:
+                    os.replace(staged, picture_path)
+                except OSError as exc:
+                    raise OSError('선택은 저장되었습니다. ez2rc chart 명령으로 그림을 갱신하세요.') from exc
 
 
 def parse_beat(text):
