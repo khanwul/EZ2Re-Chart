@@ -41,6 +41,7 @@ def confirm_taps(notes, requests, observations, shapes, barlines, scale, error):
     if not markers:
         return
     scale = tuple(map(read_ratio, scale))
+    error = exact_ms(error)
     profile = observations.manifest['metadata']['profile']
     threshold = observations.manifest['key']['parameters']['algorithm']['brightness_threshold']
     evidence = defaultdict(dict)
@@ -64,7 +65,7 @@ def confirm_taps(notes, requests, observations, shapes, barlines, scale, error):
             edge = top + height - 1
             tick = read_ratio(targets[cid]['start_beat']) * DRAFT_GRID.ticks_per_beat
             for marker, row in markers[frame]:
-                lo, hi = map(exact_ms, row['visible_range_px'])
+                lo, hi = (exact_ms(float(y)) for y in row['visible_range_px'])
                 shifts = [(y-edge+d)/s for (y, d), s in product(((lo, -error), (hi, error)), scale)]
                 domain = closed(labels[marker]+min(shifts), labels[marker]+max(shifts))
                 ticks = grid_candidate_ticks(domain, DRAFT_GRID)

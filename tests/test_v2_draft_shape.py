@@ -35,13 +35,13 @@ class TapShapeTests(unittest.TestCase):
             flags[3] = 6
         chunk = dict(frame_id=frames, candidate_index=[(f, 0, 0) for f in frames], flags=flags,
                      positions=np.array([[[0, top]] for top in tops]), scores=np.ones((8, 1)), projection=fields)
-        rows = [dict(frame_id=int(f), visible_range_px=[int(top)+6.5, int(top)+7.5]) for f, top in zip(frames, tops)]
+        rows = [dict(frame_id=int(f), visible_range_px=np.array([top+6.5, top+7.5])) for f, top in zip(frames, tops)]
         bars = dict(hypotheses=[{'assignments': [dict(marker_id='bar', beat=[4, 1])]}],
                     tracks=[dict(id='bar', observations=rows)])
         note = dict(id='tap', type='tap', issues=['pixel_ambiguous'], status='unresolved',
                     evidence={'start': {'offset_px': [7, 1]}}, start_beat=[5 if alternate_beat else 4, 1])
         confirm_taps([note], {k: 'tap' for k in chunk['candidate_index']}, Observations(),
-                     [{'tap': [8, 10]}], bars, [[400, 1], [410, 1]], 1)
+                     [{'tap': [8, 10]}], bars, [[400, 1], [410, 1]], 0.75)
         return note
 
     def test_direct_shape_and_position_required(self):
