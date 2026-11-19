@@ -5,13 +5,14 @@ from fractions import Fraction
 from .barline_grid import spatial_reference
 from .contracts import exact_ms, ratio, read_ratio
 from .decode import KINDS, lanes
+from .draft_phase import recover_positions
 from .motion import STATUS, timeline
 from .observation import template_shapes
 from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-10'
+VERSION = 'screen-coordinate-draft-11'
 
 
 def apply_start_grid(note):
@@ -210,6 +211,9 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             current = None
     geometry = relative.get('observed_geometry', {}) if relative else {}
     scale = geometry.get('scale_bounds_px_per_beat')
+    if (not origin_issues and not geometry_issues and geometry.get('status') == 'conditional'
+            and (geometry.get('draft_start_grid') or {}).get('status') != 'conflict'):
+        recover_positions(notes, candidates, observations, requests, shapes, barlines, scale, error)
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
             'default_start_reference': 'template_bottom',
             'start_ticks_per_beat': DRAFT_GRID.ticks_per_beat,
