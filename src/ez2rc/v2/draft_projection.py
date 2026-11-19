@@ -6,13 +6,14 @@ from .barline_grid import spatial_reference
 from .contracts import exact_ms, ratio, read_ratio
 from .decode import KINDS, lanes
 from .draft_phase import recover_positions
+from .draft_shape import confirm_taps, tap_requests
 from .motion import STATUS, timeline
 from .observation import template_shapes
 from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-11'
+VERSION = 'screen-coordinate-draft-12'
 
 
 def apply_start_grid(note):
@@ -106,6 +107,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                    'endpoint_calibrations': []}
     requests, candidates, endpoint_data = defaultdict(list), [], {}
     coordinate_ids = {}
+    shape_requests = {}
     for lane in lanes(decoded):
         eps = {e['id']: e for e in lane['endpoints']}
         events = {cid: e for e in lane['events'] for cid in e['candidate_ids']}
@@ -113,6 +115,9 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             if not candidate['competitive']:
                 continue
             event = events[candidate['id']]
+            if candidate['start']:
+                for oid in tap_requests(candidate, event, eps[candidate['start']]):
+                    shape_requests[tuple(int(v[1:]) for v in oid.split(':'))] = candidate['id']
             candidates.append({**candidate, 'lane': lane['lane'], 'event_id': event['id'],
                                'pixel_status': event['status'], 'pixel_reason': event['reason']})
             for eid in (candidate['start'], candidate['end']):
@@ -214,6 +219,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
     if (not origin_issues and not geometry_issues and geometry.get('status') == 'conditional'
             and (geometry.get('draft_start_grid') or {}).get('status') != 'conflict'):
         recover_positions(notes, candidates, observations, requests, shapes, barlines, scale, error)
+        confirm_taps(notes, shape_requests, observations, shapes, barlines, scale, error)
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
             'default_start_reference': 'template_bottom',
             'start_ticks_per_beat': DRAFT_GRID.ticks_per_beat,
