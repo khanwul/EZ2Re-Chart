@@ -11,7 +11,7 @@ from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-9'
+VERSION = 'screen-coordinate-draft-10'
 
 
 def apply_start_grid(note):
@@ -73,6 +73,16 @@ def draft_endpoint_offset(profile, kind, template_height=None):
     return 0
 
 
+def _review_witnesses(witnesses, coordinate_ids):
+    """Lead with a usable detection that contributed to the endpoint coordinate."""
+    ordered = sorted(witnesses, key=lambda w: (not w['usable'],
+                                                w['observation_id'] not in coordinate_ids,
+                                                w['frame_id']))
+    if not ordered:
+        return []
+    return [ordered[i] for i in sorted({0, len(ordered) // 2, len(ordered) - 1})]
+
+
 def project_draft(observations, movement, decoded, barlines, *, allowed_candidates=None, analysis_scope=None):
     if (movement.manifest['key']['parents'] != [observations.id]
             or decoded.manifest['key']['parents'][:2] != [observations.id, movement.id]
@@ -94,6 +104,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                    'decode_cache_id': decoded.id, 'localization_error_px': error,
                    'endpoint_calibrations': []}
     requests, candidates, endpoint_data = defaultdict(list), [], {}
+    coordinate_ids = {}
     for lane in lanes(decoded):
         eps = {e['id']: e for e in lane['endpoints']}
         events = {cid: e for e in lane['events'] for cid in e['candidate_ids']}
@@ -115,6 +126,8 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                         'endpoint_id': eid, 'candidate_id': candidate['id'], 'version': VERSION,
                         'offset_px': [offset, offset], 'position_error_px': error})
                 if eid not in endpoint_data:
+                    coordinate_ids[eid] = {r['observation_id'] for r in endpoint.get('coordinate_observations', ())
+                                           if endpoint['q_px'] is not None}
                     endpoint_data[eid] = {'offset_px': ratio(exact_ms(offset)), 'witnesses': []}
                     for oid in endpoint['observation_ids']:
                         frame, lane_id, seed = [int(v[1:]) for v in oid.split(':')]
@@ -142,11 +155,9 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                                        *reversed(shapes[lane][KINDS[kind]])]} if shapes is not None else {}),
                         'observation_id': f'f{frame}:l{lane}:y{seed}',
                         'usable': not bool(int(chunk['flags'][i, kind]) & 3)})
-    for data in endpoint_data.values():
-        witnesses = sorted(data['witnesses'], key=lambda w: (not w['usable'], w['frame_id']))
-        data['witness_count'] = len(witnesses)
-        data['witnesses'] = ([witnesses[i] for i in sorted({0, len(witnesses)//2, len(witnesses)-1})]
-                             if witnesses else [])
+    for eid, data in endpoint_data.items():
+        data['witness_count'] = len(data['witnesses'])
+        data['witnesses'] = _review_witnesses(data['witnesses'], coordinate_ids[eid])
     notes, alternatives = [], []
     for candidate in candidates:
         if allowed_candidates is not None and candidate['id'] not in allowed_candidates:

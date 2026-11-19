@@ -25,6 +25,17 @@ def empty_draft():
 
 
 class DraftTest(unittest.TestCase):
+    def test_preview_prefers_a_usable_coordinate_observation(self):
+        from ez2rc.v2.draft_projection import _review_witnesses
+
+        rows = [{'frame_id': i, 'observation_id': str(i), 'usable': i != 2}
+                for i in range(5)]
+        self.assertEqual(_review_witnesses(rows, {'2', '3'})[0], rows[3])
+        self.assertEqual(_review_witnesses(rows, {'2'})[0], rows[0])
+        self.assertEqual(_review_witnesses(rows, set()),
+                         [rows[0], rows[3], rows[2]])
+        self.assertEqual(_review_witnesses([], set()), [])
+
     def test_grid_starts_preserve_measurements_and_expose_all_choices(self):
         from ez2rc.v2.draft import beat_text, parse_beat
         from ez2rc.v2.draft_projection import apply_start_grid
