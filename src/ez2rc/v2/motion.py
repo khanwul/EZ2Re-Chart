@@ -6,7 +6,7 @@ Errors are conservative algorithmic envelopes, not calibrated confidence levels.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -17,16 +17,6 @@ from .storage import Cache, CacheError, CacheWriter, digest, stage_key
 VERSION = "common-scroll-5"
 STATUS = {"origin": 0, "observed": 1, "single_lane": 2, "ambiguous": 3,
           "extrapolated": 4, "unresolved": 5, "repeated": 6}
-
-
-@dataclass(frozen=True)
-class ScrollPoint:
-    frame_id: int
-    timestamp_ms: float
-    scroll_px: float
-    error_px: float
-    repeated_group: int | None
-    observation_ids: tuple[str, ...]
 
 
 def frames(observations):
@@ -74,17 +64,19 @@ def match(previous, current, limit, config):
         b = current[(current[:, 0] == lane) & (current[:, 1] == kind)]
         if not len(b):
             continue
-        stationary = np.abs(b[:, 3, None] - a[None, :, 3]) <= min(.75, tol / 2)
+        delta = b[None, :, 3] - a[:, None, 3]
+        stationary = np.abs(delta) <= min(.75, tol / 2)
         # Exclude UI/static effects outside the judgment band too.
-        moving_a, moving_b = ~stationary.any(axis=0), ~stationary.any(axis=1)
-        for pa in a[moving_a]:
-            for pb in b[moving_b]:
-                d = pb[3] - pa[3]
-                if .75 < d <= limit:
-                    pairs.append((lane, kind, pa[2], pb[2], d, min(pa[4], pb[4]), pa[3], pb[3]))
+        usable = (~stationary.any(axis=1)[:, None] & ~stationary.any(axis=0)
+                  & (delta > .75) & (delta <= limit))
+        left, right = np.nonzero(usable)
+        if len(left):
+            pa, pb = a[left], b[right]
+            pairs.append(np.column_stack((pa[:, :3], pb[:, 2], delta[left, right],
+                                          np.minimum(pa[:, 4], pb[:, 4]), pa[:, 3], pb[:, 3])))
     if not pairs:
         return []
-    pairs = np.asarray(pairs)
+    pairs = np.concatenate(pairs)
     # Broad votes propose shifts; robust, ordered links below score each mode.
     bins = np.rint(pairs[:, 4] / tol).astype(int)
     votes = {}
@@ -96,7 +88,6 @@ def match(previous, current, limit, config):
     models = []
     for proposal in proposals:
         shift = proposal * tol
-        selected = []
         for _ in range(3):
             near = pairs[np.abs(pairs[:, 4] - shift) <= tol]
             selected = []
@@ -113,11 +104,13 @@ def match(previous, current, limit, config):
                 break
             # Median within lanes then across lanes bounds dense-lane influence.
             links = np.asarray(selected)
-            shift = float(np.median([np.median(links[links[:, 0] == lane, 4])
-                                     for lane in np.unique(links[:, 0])]))
+            updated = float(np.median([np.median(links[links[:, 0] == lane, 4])
+                                       for lane in np.unique(links[:, 0])]))
+            if updated == shift:
+                break
+            shift = updated
         if not selected or any(abs(shift - m["delta"]) <= tol for m in models):
             continue
-        links = np.asarray(selected)
         residual = np.abs(links[:, 4] - shift)
         lanes = len(np.unique(links[:, 0]))
         quality = sum(float(np.max(links[links[:, 0] == lane, 5]
@@ -224,10 +217,12 @@ def estimate(observations: Cache, config: MotionConfig, root: Path, *, progress=
                                        - previous["projection"][:, :height])) <= config.repeat_difference
                         and np.mean(np.abs(frame["edge"][:, :height].astype(float)
                                            - previous["edge"][:, :height])) <= config.repeat_difference))
-            zero_lanes = {int(p[0]) for p in points if any(
-                p[0] == q[0] and p[1] == q[1] and abs(p[3] - q[3]) <= .5
-                for q in previous["points"])}
-            repeat = similar and len(zero_lanes) >= config.min_lanes
+            repeat = False
+            if similar:
+                zero_lanes = {int(p[0]) for p in points if any(
+                    p[0] == q[0] and p[1] == q[1] and abs(p[3] - q[3]) <= .5
+                    for q in previous["points"])}
+                repeat = len(zero_lanes) >= config.min_lanes
             repeat_edges.append(repeat)
             models, adjacent = [], []
             if not repeat:
@@ -360,13 +355,14 @@ def estimate(observations: Cache, config: MotionConfig, root: Path, *, progress=
 
 def open_motion(path, expected_key=None):
     try:
-        cache = Cache(path, expected_key)
-        key = cache.manifest["key"]
-        if key["stage"] != "motion" or key["algorithm_version"] != VERSION or len(key["parents"]) != 1:
-            raise CacheError("unsupported motion cache")
         n, last_id, last_ms, last_scroll = 0, -1, -1., -1.
         checked, rejected = 0, 0
-        for c in cache.chunks():
+
+        def check_chunk(manifest, index, c):
+            nonlocal n, last_id, last_ms, last_scroll, checked, rejected
+            key, meta = manifest["key"], manifest["metadata"]
+            if index == 0 and (key["stage"] != "motion" or key["algorithm_version"] != VERSION or len(key["parents"]) != 1):
+                raise CacheError("unsupported motion cache")
             ids = c["frame_id"]
             size = len(ids)
             if not size or ids.ndim != 1 or np.any(np.diff(ids) != 1) or last_id >= 0 and ids[0] != last_id + 1:
@@ -384,7 +380,7 @@ def open_motion(path, expected_key=None):
                     or np.any(c["repeat_group"] > ids) or np.any(c["repeat_group"] < 0)
                     or np.any(c["reference_frame"] >= ids) or np.any(c["reference_frame"] < -1)
                     or np.any(c["support_lanes"] < 0)
-                    or np.any(c["support_lanes"] > cache.manifest["metadata"]["lane_count"])):
+                    or np.any(c["support_lanes"] > meta["lane_count"])):
                 raise CacheError("invalid motion coordinates/status")
             for name, width in (("links", 9), ("alternatives", 5), ("path_checks", 9)):
                 if c[name].ndim != 2 or c[name].shape[1] != width or not np.isfinite(c[name]).all() or not np.isin(c[name][:, 0], ids).all():
@@ -397,7 +393,7 @@ def open_motion(path, expected_key=None):
                     or np.any(paths[:, :2] != np.floor(paths[:, :2]))
                     or np.any(paths[:, 2] <= 0) or np.any(paths[:, 3] > paths[:, 4])
                     or np.any(paths[:, 5] < 0) or np.any(paths[:, 6] < 1)
-                    or np.any(paths[:, 6] > cache.manifest['metadata']['lane_count'])
+                    or np.any(paths[:, 6] > meta['lane_count'])
                     or np.any(paths[:, 6] != np.floor(paths[:, 6]))
                     or not np.isin(paths[:, 7], [0, 1]).all()
                     or not np.array_equal(paths[:, 7].astype(bool), consistent)):
@@ -406,10 +402,12 @@ def open_motion(path, expected_key=None):
             rejected += int(np.count_nonzero(paths[:, 7] == 0))
             n += size
             last_id, last_ms, last_scroll = int(ids[-1]), c["timestamp_ms"][-1], c["scroll_px"][-1]
-        if n != cache.manifest["metadata"]["frame_count"] or key["parents"] != [cache.manifest["metadata"]["observation_cache_id"]]:
+
+        cache = Cache(path, expected_key, validate_chunk=check_chunk)
+        key, meta = cache.manifest["key"], cache.manifest["metadata"]
+        if n != meta["frame_count"] or key["parents"] != [meta["observation_cache_id"]]:
             raise CacheError("motion lineage/count mismatch")
-        if (checked != cache.manifest['metadata']['path_checked_models']
-                or rejected != cache.manifest['metadata']['path_rejected_models']):
+        if checked != meta['path_checked_models'] or rejected != meta['path_rejected_models']:
             raise CacheError('motion path check count mismatch')
         return cache
     except (KeyError, TypeError, ValueError, OSError, IndexError) as exc:
@@ -417,5 +415,6 @@ def open_motion(path, expected_key=None):
 
 
 def timeline(cache):
-    chunks = list(cache.chunks())
-    return {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0] if k not in {"links", "alternatives", "path_checks"}}
+    samples = [{k: v for k, v in chunk.items() if k not in {"links", "alternatives", "path_checks"}}
+               for chunk in cache.chunks()]
+    return {k: np.concatenate([sample[k] for sample in samples]) for k in samples[0]}

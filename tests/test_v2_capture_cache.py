@@ -18,6 +18,22 @@ from v2_fixtures import fixture
 
 
 class V2CaptureCacheTest(unittest.TestCase):
+    def test_stage_validators_decompress_each_chunk_once(self):
+        from ez2rc.v2.fusion import open_fusion
+        from ez2rc.v2.motion import open_motion
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            song, _ = fixture(root)
+            code, run = execute(song, output_root=root / 'out')
+            self.assertEqual(code, 2)
+            for stage, open_stage in (('observations', open_observations), ('motion', open_motion),
+                                      ('fusion', open_fusion)):
+                with self.subTest(stage=stage), patch.object(
+                        Cache, '_read_chunk', autospec=True, side_effect=Cache._read_chunk) as read:
+                    cache = open_stage(run / 'artifacts' / stage)
+                    self.assertEqual([call.args[1] for call in read.call_args_list], cache.manifest['chunks'])
+
     def test_profile_identity_is_from_parsed_bytes_even_if_file_changes_during_analysis(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -5,7 +5,7 @@ storage boundaries; finalized tiles remain contiguous evidence for a decoder.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -16,19 +16,6 @@ from .storage import Cache, CacheError, CacheWriter, canonical, digest, stage_ke
 
 VERSION = "scroll-evidence-3"
 CATEGORIES = ("visible", "unknown", "clipped", "judgment_effect", "occluded")
-
-
-@dataclass(frozen=True)
-class Evidence:
-    id: str
-    lane: int
-    coordinate_px: float
-    # None means endpoint calibration is unverified, not zero error.
-    position_error_px: float | None
-    scores: tuple[float, float, float, float]
-    visible_weight: float
-    occluded_weight: float
-    observation_ids: tuple[str, ...]
 
 
 def cache_key(observations, motion, config):
@@ -104,6 +91,14 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
     meta = observations.manifest["metadata"]
     profile = meta["profile"]
     lanes, judge = len(profile["lanes"]), profile["judge_y"]
+    _, top, _, bottom = profile["lanes"][0]["roi"]
+    ys = np.arange(top, bottom)
+    body_lanes = np.repeat(np.arange(lanes), len(ys))
+    body_kinds = np.full(body_lanes.size, 3)
+    body_flags = np.full((lanes, len(ys)), 4, np.uint8)
+    body_flags[:, [0, -1]] |= 1
+    body_flags[:, ys >= profile["effect_top"]] |= 2
+    body_cat, body_weight = visibility(body_flags, config)
     calibrations = [profile["calibration"][k] for k in ("tap", "head", "tail")]
     offsets = np.array([c.get("offset_px", 0.) if c["status"] == "verified" else 0. for c in calibrations])
     calibration_errors = np.array([c.get("error_px", 0.) if c["status"] == "verified" else 0. for c in calibrations])
@@ -123,8 +118,9 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
             capped = np.minimum(pending[:, 3], config.repeat_group_cap)
             pending[:, 8:] *= (capped / pending[:, 3])[:, None]
             pending[:, 3] = capped
-            for tid in np.unique(np.floor_divide(pending[:, 1], config.tile_bins).astype(np.int64)):
-                v = pending[np.floor_divide(pending[:, 1], config.tile_bins) == tid]
+            tile_ids = np.floor_divide(pending[:, 1], config.tile_bins).astype(np.int64)
+            for tid in np.unique(tile_ids):
+                v = pending[tile_ids == tid]
                 if int(tid) not in tiles:
                     shape = (lanes, config.tile_bins, 4)
                     tiles[int(tid)] = {"score_sum": np.zeros(shape), "weight_sum": np.zeros(shape),
@@ -191,19 +187,12 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
                                            np.full(len(coords), group))))
             # Dense brightness includes observed darkness; missing coverage has
             # zero weight and is never interpreted as absent longnote body.
-            height = frame["projection"].shape[1]
-            ys = np.arange(height) + profile["lanes"][0]["roi"][1]
-            body_flags = np.full((lanes, height), 4, np.uint8)
-            body_flags[:, [0, -1]] |= 1
-            body_flags[:, ys >= profile["effect_top"]] |= 2
-            body_cat, body_weight = visibility(body_flags, config)
-            body_weight *= scale
-            lane_ids = np.r_[np.repeat(frame["candidate_index"][:, 1], 3), np.repeat(np.arange(lanes), height)]
-            kinds = np.r_[np.tile(np.arange(3), len(coords)), np.full(lanes * height, 3)]
+            lane_ids = np.r_[np.repeat(frame["candidate_index"][:, 1], 3), body_lanes]
+            kinds = np.r_[np.tile(np.arange(3), len(coords)), body_kinds]
             q = np.r_[coords.ravel(), np.tile(scroll + judge - ys, lanes)] / config.grid_px
             values = np.r_[frame["scores"][:, :3].ravel(), frame["projection"].astype(float).ravel() / 255.]
-            weight = np.r_[weights.ravel(), body_weight.ravel()]
-            errs = np.r_[errors.ravel(), np.full(lanes * height, error)]
+            weight = np.r_[weights.ravel(), body_weight.ravel() * scale]
+            errs = np.r_[errors.ravel(), np.full(body_lanes.size, error)]
             cats = np.r_[categories.ravel(), body_cat.ravel()]
             # Linear splatting preserves subpixel positions; raw coordinates
             # and candidate IDs remain available even for closely spaced peaks.
@@ -256,16 +245,19 @@ def accumulate(observations: Cache, motion: Cache, config: FusionConfig, root: P
 
 def open_fusion(path, expected_key=None):
     try:
-        cache = Cache(path, expected_key)
-        key, meta = cache.manifest["key"], cache.manifest["metadata"]
-        if key["stage"] != "fusion" or key["algorithm_version"] != VERSION or key["parents"] != [meta["observation_cache_id"], meta["motion_cache_id"]]:
-            raise CacheError("unsupported fusion cache/lineage")
-        if 'position_calibration' in meta:
-            declared = read_position_calibration(meta['position_calibration'])
-            if canonical(meta['observation_position_error_px']) != canonical(declared.error_px):
-                raise CacheError('fusion position error differs from its declaration')
         seen, bins, endpoints = set(), 0, 0
-        for c in cache.chunks():
+
+        def check_chunk(manifest, chunk_number, c):
+            nonlocal bins, endpoints
+            key, meta = manifest["key"], manifest["metadata"]
+            if chunk_number == 0:
+                if (key["stage"] != "fusion" or key["algorithm_version"] != VERSION
+                        or key["parents"] != [meta["observation_cache_id"], meta["motion_cache_id"]]):
+                    raise CacheError("unsupported fusion cache/lineage")
+                if 'position_calibration' in meta:
+                    declared = read_position_calibration(meta['position_calibration'])
+                    if canonical(meta['observation_position_error_px']) != canonical(declared.error_px):
+                        raise CacheError('fusion position error differs from its declaration')
             index, endpoint = c["index"], c["endpoint_index"]
             n, m = len(index), len(endpoint)
             if index.shape != (n, 2) or endpoint.shape != (m, 3) or index.dtype.kind not in "iu" or endpoint.dtype.kind not in "iu":
@@ -277,7 +269,7 @@ def open_fusion(path, expected_key=None):
             tids = set(np.floor_divide(index[:, 1], key["parameters"]["tile_bins"]).tolist())
             if seen & tids or len(np.unique(index, axis=0)) != n:
                 raise CacheError("duplicate fusion cells/tiles")
-            seen |= tids
+            seen.update(tids)
             for k in ("score_sum", "weight_sum", "group_count", "error_px", "frame_min", "frame_max", "visibility_weight"):
                 shape = (n, 4, 5) if k == "visibility_weight" else (n, 4)
                 if c[k].shape != shape or not np.isfinite(c[k]).all():
@@ -292,6 +284,9 @@ def open_fusion(path, expected_key=None):
                 raise CacheError("invalid endpoint weights/errors")
             bins += n
             endpoints += m
+
+        cache = Cache(path, expected_key, validate_chunk=check_chunk)
+        meta = cache.manifest["metadata"]
         if bins != meta["bin_count"] or endpoints != meta["endpoint_count"]:
             raise CacheError("fusion counts mismatch")
         return cache

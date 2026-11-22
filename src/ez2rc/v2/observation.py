@@ -250,7 +250,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
     report(frame_progress(0, start_ms, start_ms, end_ms))
     with CacheWriter(root, capture_key) as capture_writer, CacheWriter(root, observation_key) as writer:
         def flush():
-            stamps = [f.stamp for f, _, _ in buffer]
+            stamps = [stamp for stamp, _, _ in buffer]
             timeline = {
                 "frame_id": np.array([s.frame_id for s in stamps], np.int64),
                 "pts": np.array([s.pts if s.pts is not None else 0 for s in stamps], np.int64),
@@ -299,9 +299,7 @@ def collect(song: SongConfig, profile: Profile, algo: AlgorithmConfig, root: Pat
                 last_report = now
             requested_count += int(in_interval(frame.stamp.timestamp_ms, window['requested']))
             candidate_count += len(observation["scores"])
-            # Keep only the timestamp alongside features, never full frames.
-            frame.bgr = np.empty((0,), dtype=np.uint8)
-            buffer.append((frame, observation, repeat_group))
+            buffer.append((frame.stamp, observation, repeat_group))
             if len(buffer) >= algo.chunk_frames:
                 flush()
         if buffer:
@@ -364,21 +362,15 @@ def template_shapes(parameters):
     return shapes
 
 
-def _open_observations(path: Path) -> Cache:
-    from .window import validate_window, in_interval
-    cache = Cache(path)
-    key = cache.manifest["key"]
+def _validate_observation_metadata(key, metadata):
+    from .window import validate_window
     if key["stage"] != "observation" or key["algorithm_version"] != VERSION:
         raise CacheError("unsupported observation algorithm version")
-    previous_id, previous_ms = -1, -1.0
-    count = 0
-    metadata = cache.manifest["metadata"]
     window = key['parameters'].get('analysis_window')
     if window != metadata.get('analysis_window'):
         raise CacheError('observation window differs from cache key')
     if window is not None:
         validate_window(window)
-    requested_count = 0
     if metadata['profile'] != key['parameters']['profile']:
         raise CacheError('observation profile differs from cache key')
     if ('profile_sha256' in key['parameters']
@@ -389,11 +381,23 @@ def _open_observations(path: Path) -> Cache:
     fields = ('position_calibration', 'position_error_px', 'position_error_reason')
     if canonical({k: metadata.get(k) for k in fields}) != canonical({k: expected.get(k) for k in fields}):
         raise CacheError('observation position calibration differs from declared profile')
-    lane_count = len(metadata["profile"]["lanes"])
-    roi = metadata["profile"]["lanes"][0]["roi"]
-    height = roi[3] - roi[1]
-    candidates_count = 0
-    for chunk in cache.chunks():
+
+
+def _open_observations(path: Path) -> Cache:
+    from .window import in_interval
+    previous_id, previous_ms = -1, -1.0
+    count = requested_count = candidates_count = 0
+
+    def check_chunk(manifest, index, chunk):
+        nonlocal previous_id, previous_ms, count, requested_count, candidates_count
+        metadata = manifest["metadata"]
+        if index == 0:
+            _validate_observation_metadata(manifest["key"], metadata)
+        window = metadata.get('analysis_window')
+        lanes = metadata["profile"]["lanes"]
+        lane_count = len(lanes)
+        roi = lanes[0]["roi"]
+        height = roi[3] - roi[1]
         ids, timestamps = chunk["frame_id"], chunk["timestamp_ms"]
         n = len(ids)
         if window is not None:
@@ -431,10 +435,14 @@ def _open_observations(path: Path) -> Cache:
         previous_id, previous_ms = int(ids[-1]), float(timestamps[-1])
         count += n
         candidates_count += m
+
+    cache = Cache(path, validate_chunk=check_chunk)
+    metadata = cache.manifest["metadata"]
     if count != metadata["frame_count"] or candidates_count != metadata["candidate_count"]:
         raise CacheError("observation frame count mismatch")
-    if window is not None and (not requested_count or requested_count != metadata.get('requested_frame_count')
-                              or count - requested_count != metadata.get('auxiliary_frame_count')):
+    if metadata.get('analysis_window') is not None and (
+            not requested_count or requested_count != metadata.get('requested_frame_count')
+            or count - requested_count != metadata.get('auxiliary_frame_count')):
         raise CacheError('observation window frame count mismatch')
     return cache
 

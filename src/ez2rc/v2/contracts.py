@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 import math
@@ -235,20 +235,3 @@ class Chart:
     def status(self) -> str:
         return ("complete" if self.timing.status == "resolved" and not self.unresolved
                 and not self.pending_stages else "partial")
-
-
-@dataclass(frozen=True)
-class StageRef:
-    stage: str
-    cache_id: str
-    algorithm_version: str
-
-
-@dataclass
-class ChunkBoundary:
-    """Continuation state; a chunk edge is never a physical note endpoint."""
-    scroll_px: float
-    scroll_error_px: float
-    open_candidate_ids: tuple[str, ...] = ()
-    evidence_refs: tuple[str, ...] = ()
-    state: dict = field(default_factory=dict)
