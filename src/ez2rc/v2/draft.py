@@ -41,7 +41,7 @@ def _note(row, lane_count):
         raise ValueError('invalid note evidence or issues')
 
 
-def validate_draft(value):
+def _validated_document_hash(value):
     try:
         if value['format'] != 'ez2rc.draft' or type(value['schema_version']) is not int or value['schema_version'] != 1:
             raise ValueError('unsupported draft schema')
@@ -57,7 +57,7 @@ def validate_draft(value):
             raise ValueError('duplicate automatic candidate ID')
         for row in rows + value['notes']:
             _note(row, metadata.lane_count)
-        replay = {r['id']: deepcopy(r) for r in automatic['notes']}
+        replay = {r['id']: r for r in automatic['notes']}
         if 'tap_placements' in value['projection']:
             placements = value['projection']['tap_placements']
             if not isinstance(placements, dict) or len(placements) < 2:
@@ -86,16 +86,21 @@ def validate_draft(value):
         current = {r['id']: r for r in value['notes']}
         if len(current) != len(value['notes']) or current != replay:
             raise ValueError('saved notes disagree with edit history')
-        if value['document_sha256'] != digest({k: v for k, v in value.items() if k != 'document_sha256'}):
-            raise ValueError('draft checksum mismatch; use the editing commands to change notes')
+        return digest({k: v for k, v in value.items() if k != 'document_sha256'})
     except (KeyError, TypeError, AttributeError) as exc:
         raise ValueError(f'invalid draft: {exc}') from exc
+
+
+def validate_draft(value):
+    checksum = _validated_document_hash(value)
+    if value.get('document_sha256') != checksum:
+        raise ValueError('draft checksum mismatch; use the editing commands to change notes')
     return value
 
 
 def seal(value):
-    value['document_sha256'] = digest({k: v for k, v in value.items() if k != 'document_sha256'})
-    return validate_draft(value)
+    value['document_sha256'] = _validated_document_hash(value)
+    return value
 
 
 def create_draft(projection, metadata, bpm, source):

@@ -10,7 +10,6 @@ from collections import defaultdict
 from .contracts import ratio, read_ratio
 from .endpoint_ranges import closed
 from .rhythm import grid_candidates
-from .spatial_constraints import ConstantSpacingMap
 
 VERSION = 'shared-geometry-grid-refinement-4'
 
@@ -39,7 +38,7 @@ def refine_grid(model, endpoints, grid, *, reviewed_candidate_ids=()):
             else:
                 points = {p['side']:p for p in rows}
                 starts, ends = possibilities[points['start']['id']],possibilities[points['end']['id']]
-                if starts and ends and any(end>start for start in starts for end in ends):
+                if starts and ends and max(ends) > min(starts):
                     valid.update(p['id'] for p in rows)
             if all(eligible(p) for p in rows) and any(
                     possibilities[p['id']] == [] for p in rows):

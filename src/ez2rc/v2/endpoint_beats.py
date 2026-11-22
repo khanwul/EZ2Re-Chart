@@ -1,7 +1,7 @@
 """Join endpoint time domains to an explicitly shared musical error model."""
 from copy import deepcopy
 
-from .contracts import decimal_bpm, exact_ms, ratio, read_ratio
+from .contracts import decimal_bpm, exact_ms, read_ratio
 from .endpoint_ranges import VERSION as ENDPOINT_VERSION, closed
 from .timing import PROJECTION_VERSION
 
