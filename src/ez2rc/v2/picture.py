@@ -275,8 +275,8 @@ def chart_strips(draft, items):
             if letter != 'A':
                 place(other, f'{number}{letter}', True, grid_choice=other['id'] == item.note['id'])
 
-    ordered = list(chart_columns(blocks))
-    rail_width = number_rail_width(blocks, grid if grid.numbered else None)
+    ordered = list(chart_columns(blocks, len(grid.starts)))
+    rail_width = number_rail_width(ordered, grid if grid.numbered else None)
     start_labels, slots, slot_width = _start_labels(draft, grid)
     panel = rail_width + lanes * lane_width + 10 + slots * slot_width
 

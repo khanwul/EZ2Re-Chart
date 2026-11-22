@@ -28,8 +28,10 @@ def number_rail_width(blocks, measure):
     return 8 * max(len(str(first)), len(str(last))) + 7
 
 
-def chart_columns(blocks):
-    """Include rests from beat zero, skipping exceptionally distant manual positions."""
+def chart_columns(blocks, observed_boundaries=0):
+    """Include observed rests through the final line, also drawn at column seams."""
+    measured = range((observed_boundaries + COLUMN_MEASURES - 2) // COLUMN_MEASURES)
+    blocks = set(blocks).union(measured)
     previous = min(0, min(blocks, default=0)) - 1
     for block in sorted(blocks):
         if block - previous <= 256:

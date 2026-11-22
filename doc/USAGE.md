@@ -35,7 +35,7 @@ A tap can also be placed through a neighboring tap visible with a numbered line.
 
 ## Review the draft
 
-Open `chart.png` in the result directory. Read each column **from bottom to top**, then move right. Short bars are taps, and vertical strips are holds. Read the start beat at the bottom edge of either shape and the end of a hold at its top edge. Brighter grid lines mark measures.
+Open `chart.png` in the result directory. Read each column **from bottom to top**, then move right. Short bars are taps, and vertical strips are holds. Read the start beat at the bottom edge of either shape and the end of a hold at its top edge. Brighter grid lines mark measures. Columns continue through the last observed measure line, including rests after the final note.
 
 For the commands below, run this from the repository root, replacing the path with the directory printed by `extract`.
 

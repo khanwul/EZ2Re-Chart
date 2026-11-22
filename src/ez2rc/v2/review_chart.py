@@ -44,13 +44,14 @@ def chart_view(draft):
             continue
         for block in range(first, last + 1):
             blocks.setdefault(block, []).append((index, note, start, end))
-    rail_width = number_rail_width(blocks, grid if grid.numbered else None)
+    ordered = list(chart_columns(blocks, len(grid.starts)))
+    rail_width = number_rail_width(ordered, grid if grid.numbered else None)
     rail_left = 4
     lane_left = rail_left + rail_width
     lane_right = lane_left + lanes * 34
     width = lane_right + 4
     panels = []
-    for block in chart_columns(blocks):
+    for block in ordered:
         first_measure = block * COLUMN_MEASURES
         base = grid.boundary(first_measure)
         span = grid.boundary(first_measure + COLUMN_MEASURES) - base

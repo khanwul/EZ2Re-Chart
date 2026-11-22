@@ -53,3 +53,19 @@ class ObservedMeterTest(unittest.TestCase):
         grid.draw(image, 165)
         solid = np.flatnonzero((image[:, 2] == (50, 205, 255)).all(axis=1))
         self.assertEqual(list(solid), [15, 55, 95, 125, 165])
+
+    def test_trailing_observed_lines_remain_visible_after_the_last_note(self):
+        projection = {'barline_beats': [[b, 1] for b in (0, 2, 4, 6, 8, 11, 13, 16, 18)]}
+        note = {'id': 'early', 'lane': 0, 'type': 'tap', 'start_beat': [1, 1], 'end_beat': None,
+                'status': 'draft', 'issues': []}
+        draft = {'projection': projection, 'metadata': {'lane_count': 2}, 'notes': [note], 'bpm': '100'}
+        html = chart_view(draft)
+        self.assertIn('Chart starting at beat 8', html)
+        self.assertNotIn('Chart starting at beat 18', html)
+        _, strip = chart_strips(draft, {})
+        # Look beyond the first column for the five actual boundaries. The
+        # last line closes the second column without creating a third.
+        hits = np.all(strip == (158, 168, 180), axis=2)
+        last_x = np.flatnonzero(np.any(hits, axis=0))[-1]
+        rows = np.flatnonzero(hits[:, last_x])[::-1]
+        self.assertEqual(list(rows), [rows[0] - round((rows[0]-rows[-1])*b/10) for b in (0,3,5,8,10)])
