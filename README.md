@@ -16,9 +16,7 @@ uv run ez2rc init my-song --video "input/play.mkv" --templates "input/templates"
 uv run ez2rc extract my-song/song.toml --output out
 ```
 
-The draft reads measure lengths from the recording. A song can change meter while its BPM stays fixed.
-
-Open `chart.png` in the printed result directory. `Draft complete` means the detected notes have estimated beat positions and no numbered choices remain. A `partial` run (exit code `2`) still saves the draft for review.
+Open `chart.png` in the printed result directory. A `partial` run (exit code `2`) still saves a draft for review.
 
 For recording setup, draft review, and troubleshooting, see the [v2 user guide](doc/USAGE.md).
 
