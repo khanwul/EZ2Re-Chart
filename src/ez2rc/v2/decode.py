@@ -7,6 +7,7 @@ without a beam or a duration cutoff. Storage tiles are only ingestion batches.
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import codecs
 from dataclasses import asdict
 import heapq
@@ -129,9 +130,9 @@ class BodyEvidence:
     def __init__(self, cells, grid, config, clock=None, endpoint_footprints=None):
         self.grid, self.config = grid, config
         self.q = cells['index'][:, 1].astype(float) * grid
-        self.errors = cells.get('error_px', np.zeros((len(self.q), 4)))[:, 3]
-        self.frame_min = cells.get('frame_min', np.full((len(self.q), 4), -1))[:, 3]
-        self.frame_max = cells.get('frame_max', np.full((len(self.q), 4), -1))[:, 3]
+        self.errors = cells['error_px'][:, 3] if 'error_px' in cells else np.zeros(len(self.q))
+        self.frame_min = cells['frame_min'][:, 3] if 'frame_min' in cells else np.full(len(self.q), -1)
+        self.frame_max = cells['frame_max'][:, 3] if 'frame_max' in cells else np.full(len(self.q), -1)
         self.ambiguous_frames = (clock['frame_id'][clock['status'] == STATUS['ambiguous']]
                                  if clock is not None else np.array([], np.int64))
         w = cells['weight_sum'][:, 3]
@@ -220,10 +221,16 @@ class BodyEvidence:
         return result
 
     def extent(self, q, direction, radius):
-        possible = [(a, b) for a, b in self.runs if a - radius <= q <= b + radius]
-        if not possible:
-            return q
-        return float(min(a for a, _ in possible) if direction < 0 else max(b for _, b in possible))
+        # Disjoint runs are ordered by both start and end.
+        if direction < 0:
+            i = bisect_left(self.runs, q, key=lambda r: r[1] + radius)
+            if i < len(self.runs) and self.runs[i][0] - radius <= q:
+                return float(self.runs[i][0])
+        else:
+            i = bisect_right(self.runs, q, key=lambda r: r[0] - radius) - 1
+            if i >= 0 and q <= self.runs[i][1] + radius:
+                return float(self.runs[i][1])
+        return q
 
 
 def _clusters(q, radius):
@@ -547,19 +554,15 @@ def interval_candidates(lane, sites, endpoints, body, config):
     candidates = []
     token_coordinates = np.array([t[0] for t in tokens])
 
-    def add(kind, start, end, bounds=None):
+    def add(kind, start, end, bounds=None, *, summary=None):
         es = [e for e in (start, end) if e is not None]
         if kind == 'longnote' and start and end:
             if start['site_id'] == end['site_id'] or end['observed_q_px'] <= start['observed_q_px']:
                 return
         q0 = start['observed_q_px'] if start else bounds[0]
         q1 = end['observed_q_px'] if end else bounds[1] if bounds else q0
-        if kind == 'longnote' and q1 <= q0:
-            # A point-like incomplete hypothesis is still retained.
-            if start and end:
-                return
-            q0, q1 = min(q0, q1), max(q0, q1)
-        summary = body.summary(q0, q1) if kind == 'longnote' else None
+        if kind == 'longnote' and summary is None:
+            summary = body.summary(q0, q1)
         missing = (int(start is None or start['q_px'] is None)
                    + (int(end is None or end['q_px'] is None) if kind == 'longnote' else 0))
         terms = interval_cost(es, missing, summary, config)
@@ -609,7 +612,7 @@ def interval_candidates(lane, sites, endpoints, body, config):
             if penalty > budget + 1e-10:
                 omitted += len(tails) - j
                 break
-            add('longnote', head, tail)
+            add('longnote', head, tail, summary=summary)
     for a, b in body.runs:
         if b - a >= body.grid:
             add('longnote', None, None, (a, b))
@@ -711,9 +714,10 @@ def _lane_input(observations, fusion, lane):
     obs = {k: np.concatenate(v) for k, v in obs.items()}
     ledger, cells = {}, {}
     for chunk in fusion.chunks():
+        endpoint_mask = chunk['endpoint_index'][:, 1] == lane
+        cell_mask = chunk['index'][:, 0] == lane
         for k, value in chunk.items():
-            target = ledger if k.startswith('endpoint') else cells
-            keep = chunk['endpoint_index'][:, 1] == lane if target is ledger else chunk['index'][:, 0] == lane
+            target, keep = (ledger, endpoint_mask) if k.startswith('endpoint') else (cells, cell_mask)
             target.setdefault(k, []).append(value[keep])
     ledger = {k: np.concatenate(v) for k, v in ledger.items()}
     cells = {k: np.concatenate(v) for k, v in cells.items()}

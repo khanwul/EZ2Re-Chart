@@ -75,6 +75,15 @@ class BodyRunAllocationTest(unittest.TestCase):
         self.assertEqual(scale.scale(19, 41, 24.), 120.)
         self.assertEqual(decode.BodyRunScale([]).scale(0, 1, 24.), 24.)
 
+    def test_extent_includes_each_run_touching_the_search_radius(self):
+        body = field(120, absent=[(40, 80)])
+        for radius, left, right in ((19.5, 60, 60), (20, 0, 120)):
+            with self.subTest(radius=radius):
+                self.assertEqual(body.extent(60, -1, radius), left)
+                self.assertEqual(body.extent(60, 1, radius), right)
+        self.assertEqual(body.extent(-10, 1, 1), -10)
+        self.assertEqual(body.extent(130, -1, 1), 130)
+
     def test_weak_internal_boundaries_do_not_gain_an_extra_body_reward(self):
         # Same procedural coordinates as the existing touching-endpoint contract.
         data = scene([(20, 1), (80, [.05, .05, .25]),
