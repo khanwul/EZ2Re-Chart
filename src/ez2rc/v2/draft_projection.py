@@ -5,6 +5,7 @@ from fractions import Fraction
 from .barline_grid import spatial_reference
 from .contracts import exact_ms, ratio, read_ratio
 from .decode import KINDS, lanes
+from .draft_hold_shape import confirm_holds, hold_request
 from .draft_phase import recover_positions
 from .draft_shape import confirm_taps, tap_requests
 from .motion import STATUS, timeline
@@ -13,7 +14,7 @@ from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-13'
+VERSION = 'screen-coordinate-draft-14'
 
 
 def apply_start_grid(note):
@@ -107,7 +108,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
                    'endpoint_calibrations': []}
     requests, candidates, endpoint_data = defaultdict(list), [], {}
     coordinate_ids = {}
-    shape_requests = {}
+    shape_requests, hold_requests = {}, {}
     for lane in lanes(decoded):
         eps = {e['id']: e for e in lane['endpoints']}
         events = {cid: e for e in lane['events'] for cid in e['candidate_ids']}
@@ -115,6 +116,9 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             if not candidate['competitive']:
                 continue
             event = events[candidate['id']]
+            hold = hold_request(candidate, event, eps)
+            if hold:
+                hold_requests[candidate['id']] = hold
             if candidate['start']:
                 for oid in tap_requests(candidate, event, eps[candidate['start']]):
                     shape_requests[tuple(int(v[1:]) for v in oid.split(':'))] = candidate['id']
@@ -223,6 +227,7 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
         placements = recover_positions(notes, candidates, observations, requests, shapes, barlines, scale, error,
                                        placement_scale=tuple(map(read_ratio, start_grid.get('scale_px_per_beat', ()))))
         confirm_taps(notes, shape_requests, observations, shapes, barlines, scale, error)
+        confirm_holds(notes, hold_requests, observations, shapes, error, movement.manifest['key']['parameters'])
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
             **({'tap_placements': placements} if placements else {}),
             'default_start_reference': 'template_bottom',

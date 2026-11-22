@@ -35,6 +35,8 @@ The automatic draft resolves barline positions to sixteenth-note increments (one
 
 A crossing with ambiguous timing can still receive a beat when its screen distances to numbered lines admit one quarter-beat position across the observed movement.
 
+For a single hold candidate, the draft checks the moving head and tail and follows the bright body between them. Missing boundaries or a break in the body leave the shape open for review.
+
 ## Review the draft
 
 Open `chart.png` in the result directory. Read four measures **from bottom to top** in each column, then scroll right. If the measure length is unknown, each column covers 16 beats.
