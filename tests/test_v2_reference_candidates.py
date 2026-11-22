@@ -149,6 +149,19 @@ class VisualReferenceTest(unittest.TestCase):
             self.assertEqual(len(result['barlines']['markers']), 3)
             self.assertTrue(all(m['timestamp_interval_ms'] is None for m in result['barlines']['markers']))
 
+    def test_cumulative_drift_splits_a_track_at_the_full_range_limit(self):
+        # Adjacent coordinates differ by the allowed two pixels throughout.
+        bars = [(i, y, 70) for i, y in enumerate((80, 78, 76, 74))]
+        result = reference_candidates(*evidence([0] * 4, scroll=[0] * 4, bars=bars, chunk=2), '120')
+        self.assertEqual([m['q_range_px'] for m in result['barlines']['markers']], [[0, 4], [6, 6]])
+
+    def test_missing_last_observation_chunk_rejects_partial_timeline(self):
+        obs, moved = evidence([0, 10, 0, 0], chunk=2)
+        first = next(obs.chunks())
+        obs.chunks = lambda: iter([first])
+        with self.assertRaisesRegex(ValueError, 'timeline'):
+            reference_candidates(obs, moved, '120')
+
     def test_parent_timeline_and_signal_validation(self):
         obs, moved = evidence([0, 10, 0])
         moved.manifest['key']['parents'] = ['wrong']

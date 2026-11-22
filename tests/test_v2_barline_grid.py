@@ -97,6 +97,21 @@ class BarlineGridTest(unittest.TestCase):
         self.assertEqual(result['status'],'ambiguous')
         self.assertTrue(all('first_line_leading_coverage_unestablished' in h['reasons'] for h in result['hypotheses']))
 
+    def test_gap_between_chunks_withholds_leading_coverage(self):
+        obs, mov, clock = recording(chunk_size=30)
+        chunks = list(obs.chunks())
+        # The last chunk follows a gap after the moving lines have crossed.
+        clock['frame_id'] = clock['frame_id'].copy()
+        clock['frame_id'][120:] += 1000
+        chunks[-1]['frame_id'] = clock['frame_id'][120:].copy()
+        with patch('ez2rc.v2.barline_grid.timeline', return_value=clock):
+            grid = infer_barline_grid(obs, mov, '120', F(1))
+            self.assertEqual(grid['status'], 'ambiguous')
+            self.assertFalse(grid['hypotheses'][0]['leading_coverage'])
+            chunks[-1]['frame_id'][0] -= 1
+            with self.assertRaisesRegex(ValueError, 'frame coverage'):
+                infer_barline_grid(obs, mov, '120', F(1))
+
     def test_two_recurring_phases_remain_competing_hypotheses(self):
         markers=[{'id':str(i),'timestamp_interval_ms':[a,a+2]} for i,a in enumerate((10,110,210,40,140,240))]
         phase,hypotheses=number_barlines(markers,F(100),F(3))

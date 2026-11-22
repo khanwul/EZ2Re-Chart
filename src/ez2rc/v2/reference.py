@@ -127,34 +127,38 @@ def _barline_tracks(rows, groups, curve, profile, tolerance):
     tracks, previous = [], []
     for i, fid in enumerate(curve.ids):
         current = []
-        for j, (y, brightness) in enumerate(rows[int(fid)]):
+        for j, (y, brightness) in enumerate(rows.get(int(fid), ())):
             current.append({'id': f'bar:f{fid}:{j}', 'frame_id': int(fid), 'timestamp_ms': float(curve.ms[i]),
                             'repeat_group': int(groups[i]), 'y_px': y, 'brightness': brightness,
                             'q_px': float(curve.scroll[i] + profile['judge_y'] - y),
                             'motion_status': int(curve.status[i])})
         linked = (i > 0 and curve.ids[i] == curve.ids[i - 1] + 1 and curve.ms[i] > curve.ms[i - 1]
                   and curve.status[i] in good and curve.status[i - 1] in good)
-        edges = []
+        predecessors = [[] for _ in current]
+        successors = [0] * len(previous)
         if linked:
             for a, track in enumerate(previous):
+                last_q = track['observations'][-1]['q_px']
+                low, high = track['q_range_px']
                 for b, row in enumerate(current):
-                    q = [p['q_px'] for p in track['observations']]
-                    if (abs(q[-1] - row['q_px']) <= tolerance
-                            and max(*q, row['q_px']) - min(*q, row['q_px']) <= 2 * tolerance):
-                        edges.append((a, b))
+                    q = row['q_px']
+                    if abs(last_q - q) <= tolerance and max(high, q) - min(low, q) <= 2 * tolerance:
+                        predecessors[b].append(a)
+                        successors[a] += 1
         next_tracks = []
-        for b, row in enumerate(current):
-            matches = [a for a, target in edges if target == b]
-            if len(matches) == 1 and sum(a == matches[0] for a, _ in edges) == 1:
+        for row, matches in zip(current, predecessors):
+            q = row['q_px']
+            if len(matches) == 1 and successors[matches[0]] == 1:
                 track = previous[matches[0]]
-                track['observations'].append(row)
+                low, high = track['q_range_px']
+                track['q_range_px'] = [min(low, q), max(high, q)]
             else:
-                track = {'id': row['id'], 'observations': [row], 'association_conflicts': []}
+                track = {'id': row['id'], 'observations': [], 'q_range_px': [q, q],
+                         'association_conflicts': [row['id']] if matches else []}
                 tracks.append(track)
-            if matches and (len(matches) != 1 or sum(a == matches[0] for a, _ in edges) != 1):
-                track['association_conflicts'].append(row['id'])
                 for a in matches:
                     previous[a]['association_conflicts'].append(row['id'])
+            track['observations'].append(row)
             next_tracks.append(track)
         previous = next_tracks
     for track in tracks:
@@ -171,10 +175,11 @@ def _barline_tracks(rows, groups, curve, profile, tolerance):
             reasons.append('uncertain_motion')
         if track['association_conflicts']:
             reasons.append('ambiguous_barline_association')
-        projection = curve.project(float(np.median(q)))
+        median_q = float(np.median(q))
+        projection = curve.project(median_q)
         if projection['status'] not in ('sample', 'interpolated'):
             reasons.append('projection_' + projection['status'])
-        track.update(q_px=float(np.median(q)), q_range_px=[min(q), max(q)],
+        track.update(q_px=median_q,
                      independent_frame_groups=support, projection=projection,
                      timestamp_interval_ms=projection['bracket_ms'] if not reasons else None, reasons=reasons)
     return tracks
@@ -186,20 +191,25 @@ def reference_candidates(observations, movement, bpm, *, beat_zero_ms=None, meas
     if movement.manifest['key']['parents'] != [observations.id]:
         raise ValueError('reference candidate parent lineage mismatch')
     curve = ScrollTimeMap(timeline(movement))
-    chunks = list(observations.chunks())
-    ids, times, brightness, groups = [np.concatenate([c[k] for c in chunks]) for k in
-                                    ('frame_id', 'timestamp_ms', 'beat_brightness', 'repeat_candidate_group')]
-    if (not np.array_equal(ids, curve.ids) or not np.array_equal(times, curve.ms)
-            or brightness.shape != ids.shape or groups.shape != ids.shape
-            or groups.dtype.kind not in 'iu' or np.any(groups < 0) or np.any(groups > ids)
-            or not np.isfinite(brightness).all() or np.any(brightness < 0) or np.any(brightness > 255)):
-        raise ValueError('invalid reference observation timeline or signals')
     profile = observations.manifest['metadata']['profile']
     tolerance = movement.manifest['key']['parameters']['match_tolerance_px']
     if not finite_number(tolerance) or tolerance <= 0 or not finite_number(profile['judge_y']):
         raise ValueError('invalid barline geometry or association tolerance')
     rows = defaultdict(list)
-    for chunk in chunks:
+    brightness_parts, group_parts = [], []
+    offset = 0
+    for chunk in observations.chunks():
+        ids, times = chunk['frame_id'], chunk['timestamp_ms']
+        brightness, groups = chunk['beat_brightness'], chunk['repeat_candidate_group']
+        stop = offset + len(ids)
+        if (not np.array_equal(ids, curve.ids[offset:stop]) or not np.array_equal(times, curve.ms[offset:stop])
+                or brightness.shape != ids.shape or groups.shape != ids.shape
+                or groups.dtype.kind not in 'iu' or np.any(groups < 0) or np.any(groups > ids)
+                or not np.isfinite(brightness).all() or np.any(brightness < 0) or np.any(brightness > 255)):
+            raise ValueError('invalid reference observation timeline or signals')
+        brightness_parts.append(brightness)
+        group_parts.append(groups)
+        offset = stop
         bars = chunk['barlines']
         if (bars.ndim != 2 or bars.shape[1] != 3 or not np.isfinite(bars).all()
                 or not np.isin(bars[:, 0], chunk['frame_id']).all()
@@ -207,12 +217,14 @@ def reference_candidates(observations, movement, bpm, *, beat_zero_ms=None, meas
             raise ValueError('invalid barline observations')
         for fid, y, strength in bars:
             rows[int(fid)].append((float(y), float(strength)))
+    if offset != len(curve.ids):
+        raise ValueError('invalid reference observation timeline or signals')
     for values in rows.values():
         values.sort()
         if len({y for y, _ in values}) != len(values):
             raise ValueError('duplicate barline position')
-    beats = _beat_peaks(ids, times, brightness)
-    bars = _barline_tracks(rows, groups, curve, profile, tolerance)
+    beats = _beat_peaks(curve.ids, curve.ms, np.concatenate(brightness_parts))
+    bars = _barline_tracks(rows, np.concatenate(group_parts), curve, profile, tolerance)
     period = 60000 / decimal_bpm(bpm)
     return {
         'format': 'ez2rc.reference-candidates', 'schema_version': origin_schema(beat_zero_ms), 'algorithm_version': VERSION,

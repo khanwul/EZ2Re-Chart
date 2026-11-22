@@ -242,45 +242,50 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
     parameters = observations.manifest['key']['parameters']['algorithm']
     motion_parameters = movement.manifest['key']['parameters']
     clock = timeline(movement)
-    clock_index = {int(f):i for i,f in enumerate(clock['frame_id'])}
+    frame_ids = clock['frame_id']
     if observed_meter:
         if capture is not None and observations.manifest['key']['parents'] != [capture.id]:
             raise ValueError('barline capture lineage mismatch')
         times_by_frame = (_capture_times(capture) if capture is not None else
-                          {f: exact_ms(float(clock['timestamp_ms'][i])) for f, i in clock_index.items()})
+                          {int(f): exact_ms(float(t)) for f, t in zip(frame_ids, clock['timestamp_ms'])})
     top, bottom = profile['lanes'][0]['roi'][1],int(profile['effect_top'])
     center, width = (top+bottom)/2,parameters['barline_max_thickness']
     previous, previous_frame, first_detection = [],None,None
-    all_ids = []
+    offset = 0
+    supported = (STATUS['observed'], STATUS['repeated'])
     for chunk in observations.chunks():
+        stop = offset + len(chunk['frame_id'])
+        if not np.array_equal(chunk['frame_id'], frame_ids[offset:stop]):
+            raise ValueError('barline frame coverage differs from motion')
+        if not np.array_equal(chunk['timestamp_ms'], clock['timestamp_ms'][offset:stop]):
+            raise ValueError('barline observation and motion timelines differ')
         for j,frame in enumerate(chunk['frame_id']):
-            frame = int(frame); i = clock_index[frame]
+            frame = int(frame)
+            i = offset + j
             timestamp, scroll = float(clock['timestamp_ms'][i]),float(clock['scroll_px'][i])
-            if timestamp != float(chunk['timestamp_ms'][j]):
-                raise ValueError('barline observation and motion timelines differ')
-            all_ids.append(frame)
             rows = thin_rows(chunk['projection'][j],top,bottom,parameters)
             if rows and first_detection is None:
                 first_detection = frame
             for row in rows:
                 row.update(frame_id=frame,timestamp_ms=timestamp,q_px=scroll+profile['judge_y']-row['y_px'])
-            edges = []
+            predecessors = [[] for _ in rows]
+            successors = [0] * len(previous)
             if previous_frame is not None and frame == previous_frame+1:
+                reliable_motion = clock['status'][i] in supported and clock['status'][i-1] in supported
                 for a,track in enumerate(previous):
                     old = track['observations'][-1]
                     dt = timestamp-old['timestamp_ms']
                     for b,row in enumerate(rows):
-                        supported = {STATUS['observed'],STATUS['repeated']}
-                        if int(clock['status'][i]) in supported and int(clock['status'][i-1]) in supported:
+                        if reliable_motion:
                             matches = abs(row['q_px']-old['q_px']) <= 2*motion_parameters['match_tolerance_px']
                         else:
                             matches = 0 <= row['y_px']-old['y_px'] <= motion_parameters['max_speed_px_per_ms']*dt
                         if matches:
-                            edges.append((a,b))
+                            predecessors[b].append(a)
+                            successors[a] += 1
             current = []
-            for b,row in enumerate(rows):
-                matches = [a for a,k in edges if k==b]
-                if len(matches)==1 and sum(a==matches[0] for a,_ in edges)==1:
+            for row, matches in zip(rows, predecessors):
+                if len(matches) == 1 and successors[matches[0]] == 1:
                     track = previous[matches[0]]
                 else:
                     track = {'id':f'barline:{len(result["tracks"])}','observations':[],'association_conflict':bool(matches)}
@@ -292,7 +297,8 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
                 track['observations'].append(row)
                 current.append(track)
             previous,previous_frame = current,frame
-    if all_ids != list(map(int,clock['frame_id'])):
+        offset = stop
+    if offset != len(frame_ids):
         raise ValueError('barline frame coverage differs from motion')
     markers = []
     for track in result['tracks']:
@@ -327,12 +333,12 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
         phase,hypotheses = number_barlines(markers,period * measure_beats,measure_beats)
         reasons = [] if hypotheses else ['insufficient_recurring_barlines']
     tracks = {t['id']:t for t in result['tracks']}
-    contiguous = bool(all_ids) and all_ids == list(range(all_ids[0],all_ids[-1]+1))
+    continuous_from_zero = bool(len(frame_ids) and frame_ids[0] == 0 and np.all(np.diff(frame_ids) == 1))
     for hypothesis in hypotheses:
         first = _unbranched_rows(tracks[hypothesis['first_marker_id']])[0]
-        index = clock_index[first['frame_id']]
+        index = int(np.searchsorted(frame_ids, first['frame_id']))
         dt = float(clock['timestamp_ms'][index]-clock['timestamp_ms'][index-1]) if index else 0.
-        leading = (contiguous and all_ids[0]==0 and index>0 and first['frame_id']==first_detection
+        leading = (continuous_from_zero and index>0 and first['frame_id']==first_detection
                    and first['y_px']-top <= motion_parameters['max_speed_px_per_ms']*dt+width)
         hypothesis['leading_coverage'] = leading
         hypothesis['reasons'] = ([] if leading else ['first_line_leading_coverage_unestablished'])
