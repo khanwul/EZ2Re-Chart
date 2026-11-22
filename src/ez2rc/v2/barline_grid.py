@@ -9,12 +9,13 @@ import math
 
 import numpy as np
 
+from .barline_spacing import measured_steps, spatial_crossings
 from .contracts import decimal_bpm, exact_ms, ratio, read_ratio
 from .motion import STATUS, timeline
 from .reference import phase_candidates
 
 VERSION = 'first-barline-grid-3'
-OBSERVED_METER_VERSION = 'observed-barline-beats-2'
+OBSERVED_METER_VERSION = 'observed-barline-beats-3'
 
 
 def reconcile_cycles(hypotheses, marker_ids, measure):
@@ -178,12 +179,9 @@ def observed_barline_beats(markers, beat_ms):
     if len(markers) < 2:
         return [], [], [], ['insufficient_recurring_barlines']
     first = markers[0]
-    beats = [Fraction(0)]
-    placed = [first]
-    last_index = 0
-    unplaced = []
-    gaps = []
-    for index, marker in enumerate(markers[1:], 1):
+    positions = {first['id']: Fraction(0)}
+    previous = Fraction(0)
+    for marker in markers[1:]:
         beat = None
         for field in ('timestamp_interval_ms', 'crossing_band_ms'):
             if not first.get(field) or not marker.get(field):
@@ -192,19 +190,23 @@ def observed_barline_beats(markers, beat_ms):
             start, stop = _marker_interval(first, field)
             low = math.ceil(4 * (a - stop) / beat_ms)
             high = math.floor(4 * (b - start) / beat_ms)
-            if low == high and Fraction(low, 4) > beats[-1]:
+            if low == high and Fraction(low, 4) > previous:
                 beat = Fraction(low, 4)
                 break
-        if beat is None:
-            unplaced.append(marker['id'])
-            continue
-        if index > last_index + 1:
-            gaps.append([ratio(beats[-1]), ratio(beat)])
-        last_index = index
-        beats.append(beat)
-        placed.append(marker)
+        if beat is not None:
+            positions[marker['id']] = previous = beat
+    return _measure_layout(markers, positions)
+
+
+def _measure_layout(markers, positions):
+    placed = [m for m in markers if m['id'] in positions]
+    unplaced = [m['id'] for m in markers if m['id'] not in positions]
     if len(placed) < 2:
         return [], [], unplaced, ['barline_beat_spacing_ambiguous']
+    beats = [positions[m['id']] for m in placed]
+    indices = [i for i, m in enumerate(markers) if m['id'] in positions]
+    gaps = [[ratio(beats[i]), ratio(beats[i+1])] for i, (a, b) in enumerate(zip(indices, indices[1:]))
+            if b > a + 1]
     lengths = [b-a for a,b in zip(beats, beats[1:])]
     for i, length in enumerate(lengths):
         neighbors = lengths[max(0, i-1):i] + lengths[i+1:i+2]
@@ -216,7 +218,7 @@ def observed_barline_beats(markers, beat_ms):
     rows = [{'marker_id': m['id'], 'beat': ratio(b),
              'measure_index': i if first_gap is None or b <= first_gap else None}
             for i, (m, b) in enumerate(zip(placed, beats))]
-    return [{'first_marker_id': first['id'], 'assignments': rows, 'missing_measure_indices': [],
+    return [{'first_marker_id': placed[0]['id'], 'assignments': rows, 'missing_measure_indices': [],
              'duplicate_cycle': False, 'conflicting_marker_ids': [],
              'numbering_basis': 'observed_crossings'}], gaps, unplaced, []
 
@@ -324,6 +326,21 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
                     markers[-1]['crossing_band_ms_exact'] = [ratio(v) for v in band]
     if observed_meter:
         hypotheses, gaps, unplaced, reasons = observed_barline_beats(markers, period)
+        if unplaced and hypotheses:
+            assignments = hypotheses[0]['assignments']
+            recovered, result['line_spacing'] = spatial_crossings(
+                result['tracks'], assignments, unplaced, measured_steps(movement),
+                dict(zip(map(int, frame_ids), map(float, clock['scroll_px']))))
+            positions = {a['marker_id']: read_ratio(a['beat']) for a in assignments} | recovered
+            ordered = sorted(markers, key=lambda m: m['timestamp_interval_ms'])
+            beats = [positions[m['id']] for m in ordered if m['id'] in positions]
+            if all(b > a for a, b in zip(beats, beats[1:])):
+                hypotheses, gaps, unplaced, reasons = _measure_layout(ordered, positions)
+                for row in hypotheses[0]['assignments']:
+                    if row['marker_id'] in recovered:
+                        row['basis'] = 'measured_line_spacing'
+            else:
+                result['line_spacing']['status'] = 'crossing_order_conflict'
         phase = None
         result['uncertain_measure_spans'] = gaps
         result['unplaced_marker_ids'] = unplaced
@@ -354,6 +371,12 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
     return result
 
 
+def independent_assignments(hypothesis):
+    # A line placed by the motion graph is a draft boundary. Feeding it back
+    # as an independent note anchor would reuse the same motion evidence.
+    return [r for r in hypothesis['assignments'] if r.get('basis') != 'measured_line_spacing']
+
+
 def spatial_reference(result, calibration):
     """Connect one supported numbering hypothesis to scoped visual calibration."""
     from .observed_geometry import VERSION as GEOMETRY_VERSION
@@ -362,7 +385,7 @@ def spatial_reference(result, calibration):
         return None
     tracks = {t['id']:t for t in result['tracks']}
     anchors, support = [], {}
-    for assignment in result['hypotheses'][0]['assignments']:
+    for assignment in independent_assignments(result['hypotheses'][0]):
         identity = assignment['marker_id']
         rows = _unbranched_rows(tracks[identity])
         q = rows[0]['q_px']

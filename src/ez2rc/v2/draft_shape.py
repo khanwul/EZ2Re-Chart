@@ -2,7 +2,7 @@
 from collections import defaultdict
 from itertools import groupby, product
 
-from .barline_grid import _unbranched_rows
+from .barline_grid import _unbranched_rows, independent_assignments
 from .contracts import exact_ms, read_ratio
 from .endpoint_ranges import closed
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
@@ -31,7 +31,7 @@ def confirm_taps(notes, requests, observations, shapes, barlines, scale, error):
     if not wanted or not scale or len(barlines['hypotheses']) != 1:
         return
     frames = {f for f, _, _ in wanted}
-    labels = {a['marker_id']: read_ratio(a['beat']) for a in barlines['hypotheses'][0]['assignments']}
+    labels = {a['marker_id']: read_ratio(a['beat']) for a in independent_assignments(barlines['hypotheses'][0])}
     markers = defaultdict(list)
     for t in barlines['tracks']:
         if t['id'] in labels:

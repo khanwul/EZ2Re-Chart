@@ -33,6 +33,8 @@ The automatic draft resolves barline positions to sixteenth-note increments (one
 
 `extract` prints the result directory. Keep its hidden `.ez2rc/` folder when moving the draft. To hide per-stage progress on stderr, use `--no-progress`.
 
+A crossing with ambiguous timing can still receive a beat when its screen distances to numbered lines admit one quarter-beat position across the observed movement.
+
 ## Review the draft
 
 Open `chart.png` in the result directory. Read four measures **from bottom to top** in each column, then scroll right. If the measure length is unknown, each column covers 16 beats.

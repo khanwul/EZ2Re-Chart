@@ -8,7 +8,7 @@ import warnings
 
 import numpy as np
 
-from .barline_grid import _unbranched_rows
+from .barline_grid import _unbranched_rows, independent_assignments
 from .contracts import exact_ms, ratio, read_ratio
 from .draft_placements import pixel_separation, translated_placements
 from .draft_start_grid import intersect_scale
@@ -108,7 +108,7 @@ def _phase_estimators(barlines, lights, times, scale):
     hypotheses = barlines.get('hypotheses', ())
     if len(hypotheses) != 1 or not lights:
         return {}
-    labels = {a['marker_id']: float(read_ratio(a['beat'])) for a in hypotheses[0]['assignments']}
+    labels = {a['marker_id']: float(read_ratio(a['beat'])) for a in independent_assignments(hypotheses[0])}
     tracks = []
     for t in barlines['tracks']:
         if t['id'] in labels:

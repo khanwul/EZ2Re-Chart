@@ -27,7 +27,7 @@ def recording(omit=(), start=0, chunk_size=17):
     obs=SimpleNamespace(id='observations',chunks=lambda:iter(chunks),manifest={
         'metadata':{'profile':{'lanes':[{'roi':[0,0,10,84]}]*3,'effect_top':64,'judge_y':70}},
         'key':{'parameters':{'algorithm':AlgorithmConfig().observation_parameters()}}})
-    mov=SimpleNamespace(id='motion',manifest={'key':{'parents':[obs.id],'parameters':asdict(MotionConfig())}})
+    mov=SimpleNamespace(id='motion',chunks=lambda: iter(()),manifest={'key':{'parents':[obs.id],'parameters':asdict(MotionConfig())}})
     clock={'frame_id':ids,'timestamp_ms':timestamps,'scroll_px':ids*4.,'status':np.ones(len(ids),np.uint8)}
     return obs,mov,clock
 
