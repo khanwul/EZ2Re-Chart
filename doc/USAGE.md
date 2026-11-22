@@ -27,7 +27,7 @@ Crop taps and hold heads flush with the bottom edge of the note. Crop hold tails
 
 Follow the three commands in the [quick start](../README.md#quick-start). `init` creates a new project directory containing `song.toml`, the profile, and copies of the templates. The video stays at its original path. To label the result, add `--title "My Song" --difficulty HD` to `init`.
 
-The first identified barline marks beat zero. The draft reads measure lengths from the recording, so meter changes need no extra setting.
+The first identified barline marks beat zero. The draft reads measure lengths from the recording, so meter changes need no extra setting. If the frame-to-frame motion path breaks, a line can still be placed when its passage through the screen agrees with both neighboring numbered lines at one beat position.
 
 `extract` prints the result directory. Keep its hidden `.ez2rc/` folder when moving the draft. To hide per-stage progress on stderr, use `--no-progress`.
 

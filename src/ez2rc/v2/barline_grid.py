@@ -9,13 +9,13 @@ import math
 
 import numpy as np
 
-from .barline_spacing import measured_steps, spatial_crossings
+from .barline_spacing import measured_steps, recover_disconnected_crossings, spatial_crossings
 from .contracts import decimal_bpm, exact_ms, ratio, read_ratio
 from .motion import STATUS, timeline
 from .reference import phase_candidates
 
 VERSION = 'first-barline-grid-3'
-OBSERVED_METER_VERSION = 'observed-barline-beats-3'
+OBSERVED_METER_VERSION = 'observed-barline-beats-4'
 
 
 def reconcile_cycles(hypotheses, marker_ids, measure):
@@ -331,7 +331,9 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
             recovered, result['line_spacing'] = spatial_crossings(
                 result['tracks'], assignments, unplaced, measured_steps(movement),
                 dict(zip(map(int, frame_ids), map(float, clock['scroll_px']))))
-            positions = {a['marker_id']: read_ratio(a['beat']) for a in assignments} | recovered
+            clock_beats = recover_disconnected_crossings(markers, result['tracks'], assignments,
+                                                        result['line_spacing'], times_by_frame, period, center)
+            positions = {a['marker_id']: read_ratio(a['beat']) for a in assignments} | recovered | clock_beats
             ordered = sorted(markers, key=lambda m: m['timestamp_interval_ms'])
             beats = [positions[m['id']] for m in ordered if m['id'] in positions]
             if all(b > a for a, b in zip(beats, beats[1:])):
@@ -339,6 +341,8 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
                 for row in hypotheses[0]['assignments']:
                     if row['marker_id'] in recovered:
                         row['basis'] = 'measured_line_spacing'
+                    elif row['marker_id'] in clock_beats:
+                        row['basis'] = 'local_crossing_clock'
             else:
                 result['line_spacing']['status'] = 'crossing_order_conflict'
         phase = None
@@ -374,7 +378,7 @@ def infer_barline_grid(observations, movement, bpm, measure_beats, *, observed_m
 def independent_assignments(hypothesis):
     # A line placed by the motion graph is a draft boundary. Feeding it back
     # as an independent note anchor would reuse the same motion evidence.
-    return [r for r in hypothesis['assignments'] if r.get('basis') != 'measured_line_spacing']
+    return [r for r in hypothesis['assignments'] if r.get('basis') not in ('measured_line_spacing', 'local_crossing_clock')]
 
 
 def spatial_reference(result, calibration):
