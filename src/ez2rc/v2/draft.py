@@ -58,6 +58,20 @@ def validate_draft(value):
         for row in rows + value['notes']:
             _note(row, metadata.lane_count)
         replay = {r['id']: deepcopy(r) for r in automatic['notes']}
+        if 'tap_placements' in value['projection']:
+            placements = value['projection']['tap_placements']
+            if not isinstance(placements, dict) or len(placements) < 2:
+                raise ValueError('a placement needs at least two taps')
+            shifts = set()
+            for identity, pair in placements.items():
+                note = replay.get(identity)
+                if (not note or note['type'] != 'tap' or note['start_beat'] is not None
+                        or not isinstance(pair, list) or len(pair) != 2):
+                    raise ValueError('invalid placement for an unplaced automatic tap')
+                early, late = map(read_ratio, pair)
+                shifts.add(late - early)
+            if len(shifts) != 1 or min(shifts) <= 0:
+                raise ValueError('tap placements must have one positive beat shift')
         for change in value['history']:
             identity, before, after = change['id'], change['before'], change['after']
             if replay.get(identity) != before or before is None and after is None:
@@ -179,6 +193,28 @@ def change_note(value, action, *, identity=None, fields=None, confirm=False):
     validate_draft(value)
     result = deepcopy(value)
     current = {r['id']: r for r in result['notes']}
+    _apply_change(result, current, action, identity, fields, confirm)
+    result['notes'] = list(current.values())
+    return seal(result)
+
+
+def choose_tap_placement(value, letter):
+    validate_draft(value)
+    result = deepcopy(value)
+    pairs = result['projection']['tap_placements']
+    current = {r['id']: r for r in result['notes']}
+    original = {r['id']: r for r in result['automatic']['notes']}
+    if letter not in ('A', 'B') or any(current.get(key) != original[key] for key in pairs):
+        raise ValueError('Reopen the current chart to choose a tap placement.')
+    index = ('A', 'B').index(letter)
+    for identity, pair in pairs.items():
+        _apply_change(result, current, 'edit', identity, {'start_beat': pair[index]}, True)
+        result['history'][-1]['tap_placement'] = letter
+    result['notes'] = list(current.values())
+    return seal(result)
+
+
+def _apply_change(result, current, action, identity, fields, confirm):
     before = current.get(identity)
     if action == 'add':
         identity = 'user:' + uuid.uuid4().hex
@@ -204,7 +240,7 @@ def change_note(value, action, *, identity=None, fields=None, confirm=False):
         after.update(fields)
         if fields.get('start_beat') is not None:
             after['issues'] = [issue for issue in after['issues']
-                               if issue not in ('start_grid_ambiguous', 'start_grid_no_candidate')]
+                               if issue not in ('start_unavailable', 'start_grid_ambiguous', 'start_grid_no_candidate')]
         if after['origin'] == 'automatic':
             after['origin'] = 'user_edit'
         missing = after['start_beat'] is None or after['type'] == 'longnote' and after['end_beat'] is None
@@ -215,9 +251,7 @@ def change_note(value, action, *, identity=None, fields=None, confirm=False):
         del current[identity]
     result['history'].append({'action': action, 'id': identity, 'before': deepcopy(before), 'after': deepcopy(after),
                               'timestamp': datetime.now(timezone.utc).isoformat()})
-    result['notes'] = list(current.values())
     result['revision'] += 1
-    return seal(result)
 
 
 def describe(value, *, identity=None, unresolved=False, limit=20):

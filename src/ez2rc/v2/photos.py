@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import cv2
 
 from .capture import VideoReader
-from .picture import beat_text, pending_items, witness_time
+from .picture import Item, TapPlacementItem, beat_text, pending_items, witness_time
 from .storage import digest, file_hash, read_json
 from .witness_box import OUTLINE_DARK, OUTLINE_PINK, draw_outline, matched_boxes, witness_kind
 
@@ -56,17 +56,18 @@ def _requests(draft):
     original_notes = {n['id']: n for group in ('notes', 'alternatives')
                       for n in draft['automatic'][group]}
     items = pending_items(draft)
-    groups = [(number, item.options) for number, item in items.items()]
+    groups = list(items.values())
     if not groups:
         notes = sorted((n for n in draft['notes'] if witness_time(n) is not None), key=witness_time)
         if notes:
-            groups = [(i+1, {'': notes[index]}) for i, index in enumerate(
+            groups = [Item(i+1, notes[index], {'': notes[index]}) for i, index in enumerate(
                 sorted({0, len(notes)//2, len(notes)-1}))]
     requests = defaultdict(list)
     missing = []
-    for number, options in groups:
+    for item in groups:
+        number = item.number
         frames = defaultdict(list)
-        for letter, note in options.items():
+        for letter, note in item.photo_notes():
             sides = ('start', 'end') if note['type'] == 'longnote' else ('start',)
             for side in sides:
                 witnesses = (note['evidence'].get(side) or {}).get('witnesses', [])
@@ -85,11 +86,11 @@ def _requests(draft):
         for sequence, (frame_id, marks) in enumerate(sorted(frames.items()), 1):
             prefix = 'check' if items else 'preview'
             name = f'{prefix}-{number:04d}-{sequence:02d}.png'
-            requests[frame_id].append((name, number, marks, options))
+            requests[frame_id].append((name, number, marks, item))
     return requests, missing
 
 
-def _photo(frame, number, marks, options, rois, offset, boxes):
+def _photo(frame, number, marks, item, rois, offset, boxes):
     image = frame.bgr
     height, width = image.shape[:2]
     raw = offset is None or rois is None
@@ -127,8 +128,15 @@ def _photo(frame, number, marks, options, rois, offset, boxes):
         origin = (max(0, round(x*scale)-10), max(15, round(y*scale)-6))
         cv2.putText(shot,text,origin,cv2.FONT_HERSHEY_SIMPLEX,.45,OUTLINE_DARK,3,cv2.LINE_AA)
         cv2.putText(shot,text,origin,cv2.FONT_HERSHEY_SIMPLEX,.45,OUTLINE_PINK,1,cv2.LINE_AA)
-    check = 'A' in options
-    heading = f'Check {number}: {review_question(options)}' if check else 'Preview only - no decision needed'
+    if isinstance(item, TapPlacementItem):
+        heading = f'Check {number}: where does the tap group start?'
+        footer = [*item.lines(), f'Apply all taps with ez2rc choose {number} A or ez2rc choose {number} B']
+    elif 'A' in item.options:
+        heading = f'Check {number}: {review_question(item.options)}'
+        footer = _answers(item.options, number)
+    else:
+        heading = 'Preview only - no decision needed'
+        footer = []
     labels = [f'{letter} lane {lane+1} {side}'.strip() for letter, side, lane, _, _ in marks]
     seconds = frame.stamp.timestamp_ms / 1000
     lines = [heading, f'{seconds:.3f}s   ' + ' / '.join(dict.fromkeys(labels))]
@@ -136,8 +144,7 @@ def _photo(frame, number, marks, options, rois, offset, boxes):
         lines.append('Original frame without position markers')
     else:
         lines.append('The pink outline shows the detected note footprint.')
-    footer = _answers(options, number) if check else []
-    if check:
+    if footer:
         footer.append('Unsure? Leave this item open and check another photo.')
     row_height = 32
     width = max(680, shot.shape[1] + 24)
@@ -190,8 +197,8 @@ def write_photos(destination, draft, *, video=None, analysis_dir=None, progress=
         stage.mkdir()
         total = sum(map(len, requests.values()))
         for frame in VideoReader(path, timestamp_policy=policy):
-            for name, number, marks, options in requests.pop(frame.stamp.frame_id, []):
-                image = _photo(frame, number, marks, options, rois, source.get('alignment_offset_px'), boxes)
+            for name, number, marks, item in requests.pop(frame.stamp.frame_id, []):
+                image = _photo(frame, number, marks, item, rois, source.get('alignment_offset_px'), boxes)
                 if not cv2.imwrite(str(stage/name), image):
                     raise OSError(f'Could not save photo: {name}')
                 count += 1

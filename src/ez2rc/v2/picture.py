@@ -16,7 +16,7 @@ import numpy as np
 from .chart_layout import (COLUMN_HEIGHT, COLUMN_MEASURES, KEY_COLORS, LANE_FILLS, MEASURE_RAIL,
                            chart_columns, fit_hold_columns, number_rail_width)
 from .contracts import ratio, read_ratio
-from .draft import beat_text, change_note, start_choices
+from .draft import beat_text, change_note, choose_tap_placement, start_choices
 from .measure_grid import MeasureGrid
 from .rhythm import DEFAULT_SUBDIVISIONS
 
@@ -28,6 +28,40 @@ class Item:
     number: int
     note: dict
     options: dict
+
+    def frame_note(self, letter, side):
+        return self.options.get(letter)
+
+    def photo_notes(self):
+        return self.options.items()
+
+
+@dataclass
+class TapPlacementItem:
+    number: int
+    placements: dict
+
+    def lines(self):
+        early, late = (self.placements[letter][0]['start_beat'] for letter in ('A', 'B'))
+        shift = read_ratio(late) - read_ratio(early)
+        yield f'#{self.number}    {len(self.placements["A"])} taps. B is {shift} beat later than A.'
+        for letter, notes in self.placements.items():
+            lanes = defaultdict(list)
+            for note in notes:
+                lanes[read_ratio(note['start_beat'])].append(note['lane'] + 1)
+            for beat in sorted(lanes):
+                numbers = ', '.join(str(lane) for lane in sorted(lanes[beat]))
+                yield f'#{self.number}{letter}    beat {beat_text(ratio(beat))}    lanes {numbers}'
+
+    def frame_note(self, letter, side):
+        notes = self.placements.get(letter)
+        if notes:
+            return next((n for n in notes if (n['evidence'].get(side or 'start') or {}).get('witnesses')),
+                        notes[0])
+
+    def photo_notes(self):
+        # Both placements refer to the same observed footprints.
+        return (('A/B', note) for note in self.placements['A'])
 
 
 def option_letter(index):
@@ -53,8 +87,12 @@ def pending_items(draft):
         if event is not None:
             by_event[event].append(row)
     current = {row['id']: row for row in draft['notes']}
+    pairs = draft['projection'].get('tap_placements', {})
+    if any(row != current.get(row['id']) for row in automatic['notes'] if row['id'] in pairs):
+        pairs = {}  # A manual edit breaks the group. Keep the other taps individually accessible.
     items = {}
     number = 0
+    group_shown = False
     for original in automatic['notes']:
         event = original['evidence'].get('event_id')
         alternatives = by_event.get(event, []) if selected_count[event] == 1 else []
@@ -64,6 +102,13 @@ def pending_items(draft):
         number += 1  # Allocate before filtering completed decisions.
         note = current.get(original['id'])
         if note is None or note['status'] == 'reviewed':
+            continue
+        if note['id'] in pairs:
+            if not group_shown:
+                placements = {letter: [{**current[key], 'start_beat': pair[i]} for key, pair in pairs.items()]
+                              for i, letter in enumerate(('A', 'B'))}
+                items[number] = TapPlacementItem(number, placements)
+                group_shown = True
             continue
         options = {'A': note}
         for index, other in enumerate(sorted(alternatives, key=lambda r: r['id']), 1):
@@ -83,6 +128,10 @@ def pending_items(draft):
 
 
 def decide(draft, item, letter, fields):
+    if isinstance(item, TapPlacementItem):
+        if fields or letter not in item.placements:
+            raise ValueError('Choose A or B to place all taps together, or leave the item open.')
+        return choose_tap_placement(draft, letter)
     identity = item.note['id']
     if letter == 'X':
         if fields:
@@ -212,11 +261,16 @@ def chart_strips(draft, items):
         indices = range(first, last + 1) if last - first < 256 else (first, last)
         for block in indices:
             blocks[block].append((note['lane'], start, end, tag, alternative))
-    indexed = {item.note['id']: item for item in items.values()}
+    indexed = {item.note['id']: item for item in items.values() if isinstance(item, Item)}
     for note in draft['notes']:
         item = indexed.get(note['id'])
         place(note, f'{item.number}A' if item else '')
     for number, item in items.items():
+        if isinstance(item, TapPlacementItem):
+            for letter, notes in item.placements.items():
+                for note in notes:
+                    place(note, f'{number}{letter}', letter == 'B', grid_choice=True)
+            continue
         for letter, other in item.options.items():
             if letter != 'A':
                 place(other, f'{number}{letter}', True, grid_choice=other['id'] == item.note['id'])
@@ -230,6 +284,9 @@ def chart_strips(draft, items):
     # adding measures or review choices extends the image horizontally.
     legend = []
     for item in items.values():
+        if isinstance(item, TapPlacementItem):
+            legend.extend(item.lines())
+            continue
         for letter, candidate in item.options.items():
             seconds = witness_time(candidate)
             when = f'   video {seconds:.3f}s' if seconds is not None else ''
@@ -357,7 +414,10 @@ def chart_strips(draft, items):
         yield strip
     if items:
         strip = blank(36)
-        label(strip,'Choose a letter to keep that note, or X to remove it.  ? = unknown beat.',16,22)
+        hint = ('Choose A or B for the tap group, or leave it open. X removes individual notes.'
+                if any(isinstance(item, TapPlacementItem) for item in items.values()) else
+                'Choose a letter to keep that note, or X to remove it.  ? = unknown beat.')
+        label(strip, hint, 16, 22)
         yield strip
 
 

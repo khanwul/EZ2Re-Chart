@@ -1,6 +1,6 @@
 """Recover missing draft landmarks from shared pixels and the recorded beat indicator."""
 from bisect import bisect_left, bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from fractions import Fraction
 from itertools import groupby
 from typing import NamedTuple
@@ -10,6 +10,8 @@ import numpy as np
 
 from .barline_grid import _unbranched_rows
 from .contracts import exact_ms, ratio, read_ratio
+from .draft_placements import pixel_separation, translated_placements
+from .draft_start_grid import intersect_scale
 from .endpoint_ranges import closed
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 
@@ -202,15 +204,29 @@ def _indicator_ranges(estimators, tracks, controls, missing, margin):
     return ranges
 
 
-def _relative_bounds(track, other, scale, error):
-    common, i, j = np.intersect1d(track[:, 0], other[:, 0], assume_unique=True, return_indices=True)
-    if len(common) < 3:
+def _beat_separation(bounds, scale):
+    if bounds is None or bounds[0] > bounds[1]:
         return None
-    deltas = other[j, 1]-track[i, 1]
-    low, high = exact_ms(float(max(deltas)))-2*error, exact_ms(float(min(deltas)))+2*error
-    if low > high:
-        return None
+    low, high = bounds
     return min(low/s for s in scale), max(high/s for s in scale)
+
+
+def _relative_bounds(track, other, scale, error):
+    return _beat_separation(pixel_separation(track, other, error), scale)
+
+
+def _placement_domain(ticks, fixed, scale):
+    domain = {}
+    for tick in ticks:
+        beat = Fraction(tick, DRAFT_GRID.ticks_per_beat)
+        fit = scale
+        for anchor_beat, bounds in fixed:
+            fit = intersect_scale(fit, *bounds, beat - anchor_beat)
+            if fit is None:
+                break
+        if fit is not None:
+            domain[beat] = fit
+    return domain
 
 
 def _conflicting_starts(starts, tracks, scale, error):
@@ -228,7 +244,8 @@ def _conflicting_starts(starts, tracks, scale, error):
     return conflicts
 
 
-def recover_positions(notes, candidates, observations, requests, shapes, barlines, scale_data, error):
+def recover_positions(notes, candidates, observations, requests, shapes, barlines, scale_data, error,
+                      *, placement_scale=None):
     """Only fill absent editable values. Physical ambiguity stays visible in the draft."""
     if not shapes or not scale_data:
         return
@@ -240,6 +257,7 @@ def recover_positions(notes, candidates, observations, requests, shapes, barline
         return
     error = exact_ms(error)
     ids = {c['id']: c for c in candidates if c['selected']}
+    event_counts = Counter(c.get('event_id', c['id']) for c in candidates)
     points = {}
     missing = {}
     anchors = {}
@@ -277,6 +295,7 @@ def recover_positions(notes, candidates, observations, requests, shapes, barline
     adopted = set()
     while True:
         new = {}
+        domains = {}
         for eid, point in missing.items():
             if eid not in tracks or eid in adopted:
                 continue
@@ -287,12 +306,16 @@ def recover_positions(notes, candidates, observations, requests, shapes, barline
             if spatial:
                 limits.append((read_ratio(spatial['lower']), read_ratio(spatial['upper'])))
             links = []
+            fixed = []
             start, stop = windows[eid]
             for anchor, beat in anchors.items():
                 first, last = windows[anchor]
                 if last < start or stop < first:
                     continue
-                bound = _relative_bounds(tracks[eid], tracks[anchor], scale, error)
+                pixels = pixel_separation(tracks[eid], tracks[anchor], error)
+                if pixels is not None:
+                    fixed.append((beat, pixels))
+                bound = _beat_separation(pixels, scale)
                 if bound is not None:
                     links.append(anchor)
                     limits.append((beat+bound[0], beat+bound[1]))
@@ -312,6 +335,11 @@ def recover_positions(notes, candidates, observations, requests, shapes, barline
                 if note['end_beat'] is not None:
                     ticks = {t for t in ticks if Fraction(t, DRAFT_GRID.ticks_per_beat) < read_ratio(note['end_beat'])}
                 if len(ticks) != 1:
+                    if (note['type'] == 'tap' and note['evidence']['pixel_status'] == 'resolved'
+                            and event_counts[ids[note['id']].get('event_id', note['id'])] == 1
+                            and set(note['issues']) <= {'start_unavailable', 'start_grid_ambiguous',
+                                                        'start_grid_no_candidate'}):
+                        domains[eid] = _placement_domain(ticks, fixed, placement_scale or scale)
                     continue
                 value = Fraction(ticks.pop(), DRAFT_GRID.ticks_per_beat)
             else:
@@ -349,3 +377,7 @@ def recover_positions(notes, candidates, observations, requests, shapes, barline
             note['issues'] = [reason for reason in note['issues'] if reason not in removed]
             note['status'] = 'unresolved' if note['issues'] else 'draft'
         adopted.update(new)
+    placements = translated_placements(domains, tracks, error, placement_scale or scale)
+    if placements:
+        return {points[eid][0]['id']: [ratio(early), ratio(late)]
+                for eid, (early, late) in placements.items()}

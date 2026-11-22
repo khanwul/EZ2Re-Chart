@@ -57,7 +57,9 @@ The key to the right of your chart lists the choices for each numbered item.
 2. Open the matching photos in `review-photos-r0000/`. For item 1, start with `check-0001-01.png`. To distinguish a hold from a tap, look for a body behind the head and a tail in later frames.
 3. Apply the choice that matches the footage. For example, if item 1 matches option B, run `uv run ez2rc choose 1 B --run "$RUN"`. This updates the draft and redraws `chart.png`.
 
-A keeps the current choice. X removes the note. A `?` marks an unknown beat. Supply `--start` or `--end` if you can establish that position, or leave the item for later.
+For an individual note, A keeps the current choice and X removes the note. A `?` marks an unknown beat. Supply `--start` or `--end` if you can establish that position, or leave the item for later.
+
+Several taps can share one number when their measured spacing fits exactly two placements. The chart key and `choose` list the lanes at each beat for A and B, and how much later B starts. Use `uv run ez2rc choose 1 A --run "$RUN"` or `uv run ez2rc choose 1 B --run "$RUN"` to apply the whole placement. To keep all starts unknown, leave that item open. Listing its choices, viewing a frame, and redrawing the chart preserve the draft.
 
 Beat labels use reduced fractions, such as `2 + 3/16`. To enter that beat manually, use `--start '2 + 3/16'` or `--start 35/16`.
 

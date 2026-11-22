@@ -13,7 +13,7 @@ from .relative_beats import project_relative_beats
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 from .window import HOLD_REASON
 
-VERSION = 'screen-coordinate-draft-12'
+VERSION = 'screen-coordinate-draft-13'
 
 
 def apply_start_grid(note):
@@ -216,11 +216,15 @@ def project_draft(observations, movement, decoded, barlines, *, allowed_candidat
             current = None
     geometry = relative.get('observed_geometry', {}) if relative else {}
     scale = geometry.get('scale_bounds_px_per_beat')
+    placements = None
+    start_grid = geometry.get('draft_start_grid') or {}
     if (not origin_issues and not geometry_issues and geometry.get('status') == 'conditional'
-            and (geometry.get('draft_start_grid') or {}).get('status') != 'conflict'):
-        recover_positions(notes, candidates, observations, requests, shapes, barlines, scale, error)
+            and start_grid.get('status') != 'conflict'):
+        placements = recover_positions(notes, candidates, observations, requests, shapes, barlines, scale, error,
+                                       placement_scale=tuple(map(read_ratio, start_grid.get('scale_px_per_beat', ()))))
         confirm_taps(notes, shape_requests, observations, shapes, barlines, scale, error)
     return {'algorithm_version': VERSION, 'notes': notes, 'alternatives': alternatives,
+            **({'tap_placements': placements} if placements else {}),
             'default_start_reference': 'template_bottom',
             'start_ticks_per_beat': DRAFT_GRID.ticks_per_beat,
             'measure_beats': reference['measure_beats'] if reference is not None else None,

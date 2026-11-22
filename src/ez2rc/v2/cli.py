@@ -174,7 +174,7 @@ def main(argv=None):
 
 
 def picture_command(args):
-    from .picture import IMAGE_NAME, beat_text, decide, pending_items, witness_time, write_picture
+    from .picture import IMAGE_NAME, TapPlacementItem, beat_text, decide, pending_items, witness_time, write_picture
     directory = args.run
     path = directory / '.ez2rc' / 'draft.json'
     if not path.is_file():
@@ -217,7 +217,7 @@ def picture_command(args):
     letter = (args.letter or 'A').upper()
     if args.frame:
         from .review import export_frame
-        note = item.options.get(letter)
+        note = item.frame_note(letter, args.side)
         if note is None:
             raise ValueError('Enter a choice letter shown in the chart image.')
         evidence = note['evidence']
@@ -231,18 +231,23 @@ def picture_command(args):
         raise ValueError('Use --side and --video with --frame.')
     if not args.letter:
         from .photos import review_question
-        print(f'Item {item.number}: {review_question(item.options)}')
-        for key, note in item.options.items():
-            start = beat_text(note['start_beat'])
-            if note['type'] == 'tap':
-                action = f'Tap at beat {start}'
-            else:
-                action = f"Hold from beat {start} to beat {beat_text(note['end_beat'])}"
-            seconds = witness_time(note)
-            when = f' · video {seconds:.3f}s' if seconds is not None else ''
-            print(f'{key}  {action}{when}')
-        print('X  Remove the note')
-        frame_letter = next((key for key, row in item.options.items() if witness_time(row) is not None), None)
+        if isinstance(item, TapPlacementItem):
+            print(*item.lines(), sep='\n')
+            print('Choose A or B to place all taps. Leave the item open to keep their starts unknown.')
+            frame_letter = 'A' if witness_time(item.frame_note('A', 'start')) is not None else None
+        else:
+            print(f'Item {item.number}: {review_question(item.options)}')
+            for key, note in item.options.items():
+                start = beat_text(note['start_beat'])
+                if note['type'] == 'tap':
+                    action = f'Tap at beat {start}'
+                else:
+                    action = f"Hold from beat {start} to beat {beat_text(note['end_beat'])}"
+                seconds = witness_time(note)
+                when = f' · video {seconds:.3f}s' if seconds is not None else ''
+                print(f'{key}  {action}{when}')
+            print('X  Remove the note')
+            frame_letter = next((key for key, row in item.options.items() if witness_time(row) is not None), None)
         if frame_letter:
             print(f'Save the source frame: ez2rc choose {item.number} {frame_letter} --frame check.png')
         return 0

@@ -5,7 +5,9 @@ from .contracts import ratio, read_ratio
 from .rhythm import DRAFT_GRID, grid_candidate_ticks
 
 
-def _intersection(scale, lower, upper, delta):
+def intersect_scale(scale, lower, upper, delta):
+    if lower > upper:
+        return None
     if delta == 0:
         return scale if lower <= 0 <= upper else None
     a, b = sorted((lower / delta, upper / delta))
@@ -27,7 +29,7 @@ def _fit(scale, beat, offset, fixed, relations):
     for other, lower, upper in relations:
         other_beat, other_offset = fixed[other]
         shift = offset - other_offset
-        scale = _intersection(scale, lower + shift, upper + shift, other_beat - beat)
+        scale = intersect_scale(scale, lower + shift, upper + shift, other_beat - beat)
         if scale is None:
             break
     return scale
@@ -69,7 +71,7 @@ def refine_draft_starts(model, points):
                 if node in fixed:
                     beat, offset = fixed[node]
                     shift = offset - value[1]
-                    scale = _intersection(scale, shift, shift, value[0] - beat)
+                    scale = intersect_scale(scale, shift, shift, value[0] - beat)
                     if scale is None:
                         return {'status': 'conflict', 'endpoint_id': point['id']}
                 else:
@@ -90,7 +92,7 @@ def refine_draft_starts(model, points):
                 candidate_scale = scale
                 if node in fixed:
                     other_beat, other_offset = fixed[node]
-                    candidate_scale = _intersection(scale, other_offset-offset, other_offset-offset, beat-other_beat)
+                    candidate_scale = intersect_scale(scale, other_offset-offset, other_offset-offset, beat-other_beat)
                     if candidate_scale is None:
                         continue
                 if _fit(candidate_scale, beat, offset, fixed, relations) is not None:
