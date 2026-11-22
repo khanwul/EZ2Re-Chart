@@ -73,12 +73,14 @@ def minimum_envelope(lines, lower, upper):
 
 
 class ConstantSpacingMap:
-    def __init__(self, graph, anchors, destinations):
+    def __init__(self, graph, anchors, destinations, *, scale_bounds=None):
         if any(not isinstance(v, Fraction) for v in anchors.values()):
             raise ValueError('numbered spatial anchors require exact beat values')
         self.graph, self.anchors, self.destinations = graph,dict(anchors),set(destinations)
         self.constraints = {node: [] for node in destinations}
-        self.scale = None
+        if scale_bounds is not None and not (0 < scale_bounds[0] <= scale_bounds[1]):
+            raise ValueError('invalid spatial scale interval')
+        self.scale = scale_bounds
         self.equality_conflicts = []
         self.anchor_pair_count = 0
         self.scale_witnesses = {}

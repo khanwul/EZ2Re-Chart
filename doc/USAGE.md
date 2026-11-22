@@ -31,6 +31,8 @@ The first identified barline marks beat zero. The draft reads measure lengths fr
 
 `extract` prints the result directory. Keep its hidden `.ez2rc/` folder when moving the draft. To hide per-stage progress on stderr, use `--no-progress`.
 
+A tap can also be placed through a neighboring tap visible with a numbered line. The connected measurements must support one start at a common scroll scale.
+
 ## Review the draft
 
 Open `chart.png` in the result directory. Read each column **from bottom to top**, then move right. Short bars are taps, and vertical strips are holds. Read the start beat at the bottom edge of either shape and the end of a hold at its top edge. Brighter grid lines mark measures.
